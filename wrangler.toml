@@ -8,3 +8,4 @@ database_name = "listening-mirror-archive"
 database_id = "9af28707-ff7e-43a5-9ff2-a713f1f46aaf"
 [observability]
 enabled = true
+ 
