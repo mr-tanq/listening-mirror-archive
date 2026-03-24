@@ -5,11 +5,12 @@ export default {
       JSON.stringify({
         ok: true,
         worker: "listening-mirror-archive",
+        source: "github",
         time: new Date().toISOString()
       }),
       {
         headers: {
-          "content-type": "application/json"
+          "content-type": "application/json; charset=utf-8"
         }
       }
     )
