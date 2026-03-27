@@ -8,25 +8,24 @@ export default {
         headers: corsHeaders(),
       });
     }
- 
+
     if (url.pathname === "/" || url.pathname === "/health") {
       return json({
         ok: true,
         worker: "listening-mirror-archive",
-        build_marker: "GITHUB_VARIANT_TEST_123",
+        build_marker: "ARCHIVE_CONCERTS_V1",
         time: new Date().toISOString(),
       });
     }
 
     if (url.pathname === "/db-check") {
       try {
-        const concertsInfo = await env.ARCHIVE_DB
-          .prepare("PRAGMA table_info(concerts)")
+        const archiveInfo = await env.ARCHIVE_DB
+          .prepare("PRAGMA table_info(archive_concerts)")
           .all();
 
-        const concertsColumns = concertsInfo.results || [];
-        const concertsCount = await env.ARCHIVE_DB
-          .prepare("SELECT COUNT(*) AS total FROM concerts")
+        const archiveCount = await env.ARCHIVE_DB
+          .prepare("SELECT COUNT(*) AS total FROM archive_concerts")
           .first();
 
         let setlistsInfo = { results: [] };
@@ -45,10 +44,8 @@ export default {
         return json({
           ok: true,
           binding: "ARCHIVE_DB",
-          schema_mode: detectSchemaMode(concertsColumns),
-          has_notes_column: schemaHasColumn(concertsColumns, "notes"),
-          concerts_columns: concertsColumns,
-          concerts_total: concertsCount?.total ?? 0,
+          archive_columns: archiveInfo.results || [],
+          archive_total: archiveCount?.total ?? 0,
           setlists_columns: setlistsInfo.results || [],
           setlists_total: setlistsCount?.total ?? 0,
           has_setlistfm_api_key: !!String(env.SETLISTFM_API_KEY || "").trim(),
@@ -61,20 +58,42 @@ export default {
 
     if (url.pathname === "/concerts") {
       try {
-        const limit = Math.min(Number(url.searchParams.get("limit") || 50), 500);
-        const schema = await getConcertSchema(env);
+        const limit = Math.min(Number(url.searchParams.get("limit") || 50), 1000);
 
         const rows = await env.ARCHIVE_DB
-          .prepare(buildConcertsQuery(schema, true))
+          .prepare(`
+            SELECT
+              id,
+              event_key,
+              date,
+              end_date,
+              title,
+              main_artist,
+              supports,
+              venue,
+              venue_family,
+              city,
+              region,
+              country,
+              festival,
+              notes,
+              rating,
+              url,
+              image_url,
+              genre_hint,
+              created_at,
+              updated_at
+            FROM archive_concerts
+            ORDER BY date DESC, id DESC
+            LIMIT ?
+          `)
           .bind(limit)
           .all();
 
-        const items = (rows.results || []).map((row) => mapConcertRowToApi(row, schema));
+        const items = (rows.results || []).map(mapArchiveConcertRow);
 
         return json({
           ok: true,
-          schema_mode: schema.mode,
-          has_notes_column: schema.hasNotesColumn,
           total: items.length,
           items,
         });
@@ -85,18 +104,38 @@ export default {
 
     if (url.pathname === "/stats") {
       try {
-        const schema = await getConcertSchema(env);
-
-        const allRows = await env.ARCHIVE_DB
-          .prepare(buildConcertsQuery(schema, false))
+        const rows = await env.ARCHIVE_DB
+          .prepare(`
+            SELECT
+              id,
+              event_key,
+              date,
+              end_date,
+              title,
+              main_artist,
+              supports,
+              venue,
+              venue_family,
+              city,
+              region,
+              country,
+              festival,
+              notes,
+              rating,
+              url,
+              image_url,
+              genre_hint,
+              created_at,
+              updated_at
+            FROM archive_concerts
+            ORDER BY date DESC, id DESC
+          `)
           .all();
 
-        const concerts = (allRows.results || []).map((row) => mapConcertRowToApi(row, schema));
+        const concerts = (rows.results || []).map(mapArchiveConcertRow);
 
         return json({
           ok: true,
-          schema_mode: schema.mode,
-          has_notes_column: schema.hasNotesColumn,
           overview: buildOverview(concerts),
           highlights: buildHighlights(concerts),
           top_venues: buildTopVenues(concerts, 10),
@@ -118,20 +157,14 @@ export default {
           return json({ ok: false, error: "Missing event_key" }, 400);
         }
 
-        const schema = await getConcertSchema(env);
-
-        if (!schema.hasNotesColumn) {
-          return json({
-            ok: false,
-            error: "Notes not supported in current concerts schema",
-            event_key: eventKey,
-            schema_mode: schema.mode,
-          }, 400);
-        }
-
         const existing = await env.ARCHIVE_DB
-          .prepare(buildFindConcertForNoteQuery(schema))
-          .bind(eventKey, eventKey)
+          .prepare(`
+            SELECT id
+            FROM archive_concerts
+            WHERE event_key = ?
+            LIMIT 1
+          `)
+          .bind(eventKey)
           .first();
 
         if (!existing?.id) {
@@ -139,39 +172,58 @@ export default {
             ok: false,
             error: "Concert not found",
             event_key: eventKey,
-            schema_mode: schema.mode,
           }, 404);
         }
 
-        if (schema.mode === "new") {
-          await env.ARCHIVE_DB
-            .prepare(buildUpdateConcertNoteQuery(schema))
-            .bind(notes, Date.now(), existing.id)
-            .run();
-        } else {
-          await env.ARCHIVE_DB
-            .prepare(buildUpdateConcertNoteQuery(schema))
-            .bind(notes, existing.id)
-            .run();
-        }
+        await env.ARCHIVE_DB
+          .prepare(`
+            UPDATE archive_concerts
+            SET notes = ?, updated_at = ?
+            WHERE id = ?
+          `)
+          .bind(notes, Date.now(), existing.id)
+          .run();
 
         const updated = await env.ARCHIVE_DB
-          .prepare(buildSingleConcertQuery(schema))
+          .prepare(`
+            SELECT
+              id,
+              event_key,
+              date,
+              end_date,
+              title,
+              main_artist,
+              supports,
+              venue,
+              venue_family,
+              city,
+              region,
+              country,
+              festival,
+              notes,
+              rating,
+              url,
+              image_url,
+              genre_hint,
+              created_at,
+              updated_at
+            FROM archive_concerts
+            WHERE id = ?
+            LIMIT 1
+          `)
           .bind(existing.id)
           .first();
 
         return json({
           ok: true,
-          schema_mode: schema.mode,
           event_key: eventKey,
-          item: mapConcertRowToApi(updated, schema),
+          item: mapArchiveConcertRow(updated),
         });
       } catch (err) {
         return json({ ok: false, error: String(err) }, 500);
       }
     }
-
-    if (url.pathname === "/concert-setlist" && request.method === "GET") {
+if (url.pathname === "/concert-setlist" && request.method === "GET") {
       try {
         const eventKey = asText(url.searchParams.get("event_key"));
         const debug = asText(url.searchParams.get("debug")) === "1";
@@ -351,14 +403,26 @@ function asText(value) {
 }
 
 function splitArtists(value) {
-  return String(value || "")
+  if (Array.isArray(value)) {
+    return value.map((x) => asText(x)).filter(Boolean);
+  }
+
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+
+  if ((raw.startsWith("[") && raw.endsWith("]")) || (raw.startsWith('"[') && raw.endsWith(']"'))) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map((x) => asText(x)).filter(Boolean);
+      }
+    } catch {}
+  }
+
+  return raw
     .split(/[,/]| \u2022 | & /)
     .map((x) => x.trim())
     .filter(Boolean);
-}
-
-function normalizeArtistName(value) {
-  return asText(value).toLowerCase();
 }
 
 function titleCaseWords(value) {
@@ -370,286 +434,24 @@ function titleCaseWords(value) {
     .join(" ");
 }
 
-function titleCaseCity(value) {
-  return titleCaseWords(value);
-}
-
-function schemaHasColumn(columns, name) {
-  const set = new Set((columns || []).map((c) => String(c?.name || "")));
-  return set.has(name);
-}
-
-function detectSchemaMode(columns) {
-  const names = new Set((columns || []).map((c) => String(c?.name || "")));
-
-  if (names.has("artists_main") && names.has("date_local") && names.has("venue_name")) {
-    return "new";
-  }
-
-  if (names.has("main_artist") && names.has("date") && names.has("venue")) {
-    return "legacy";
-  }
-
-  return "unknown";
-}
-
-async function getConcertSchema(env) {
-  const tableInfo = await env.ARCHIVE_DB
-    .prepare("PRAGMA table_info(concerts)")
-    .all();
-
-  const columns = tableInfo.results || [];
-  const mode = detectSchemaMode(columns);
-
-  if (mode === "unknown") {
-    throw new Error("Unsupported concerts schema");
-  }
-
-  return {
-    mode,
-    columns,
-    hasNotesColumn: schemaHasColumn(columns, "notes"),
-  };
-}
-function buildConcertsQuery(schema, withLimit) {
-  if (schema.mode === "new") {
-    return `
-      SELECT
-        id,
-        title,
-        artists_main,
-        artists_all,
-        date_local,
-        time_local,
-        venue_name,
-        city,
-        country,
-        url,
-        image_url,
-        genre_hint,
-        ${schema.hasNotesColumn ? "notes" : "'' AS notes"},
-        source,
-        source_id,
-        updated_at
-      FROM concerts
-      ORDER BY date_local DESC, id DESC
-      ${withLimit ? "LIMIT ?" : ""}
-    `;
-  }
-
-  return `
-    SELECT
-      id,
-      date,
-      end_date,
-      title,
-      main_artist,
-      supports,
-      venue,
-      venue_family,
-      city,
-      region,
-      country,
-      festival,
-      notes,
-      rating,
-      event_key,
-      updated_at
-    FROM concerts
-    ORDER BY date DESC, id DESC
-    ${withLimit ? "LIMIT ?" : ""}
-  `;
-}
-
-function buildSingleConcertQuery(schema) {
-  if (schema.mode === "new") {
-    return `
-      SELECT
-        id,
-        title,
-        artists_main,
-        artists_all,
-        date_local,
-        time_local,
-        venue_name,
-        city,
-        country,
-        url,
-        image_url,
-        genre_hint,
-        ${schema.hasNotesColumn ? "notes" : "'' AS notes"},
-        source,
-        source_id,
-        updated_at
-      FROM concerts
-      WHERE id = ?
-      LIMIT 1
-    `;
-  }
-
-  return `
-    SELECT
-      id,
-      date,
-      end_date,
-      title,
-      main_artist,
-      supports,
-      venue,
-      venue_family,
-      city,
-      region,
-      country,
-      festival,
-      notes,
-      rating,
-      event_key,
-      updated_at
-    FROM concerts
-      WHERE id = ?
-      LIMIT 1
-  `;
-}
-
-function buildFindConcertForNoteQuery(schema) {
-  if (schema.mode === "new") {
-    return `
-      SELECT id
-      FROM concerts
-      WHERE source_id = ? OR id = ?
-      LIMIT 1
-    `;
-  }
-
-  return `
-    SELECT id
-    FROM concerts
-    WHERE event_key = ? OR id = ?
-    LIMIT 1
-  `;
-}
-
-function buildFindConcertByEventKeyQuery(schema) {
-  if (schema.mode === "new") {
-    return `
-      SELECT
-        id,
-        title,
-        artists_main,
-        artists_all,
-        date_local,
-        time_local,
-        venue_name,
-        city,
-        country,
-        url,
-        image_url,
-        genre_hint,
-        ${schema.hasNotesColumn ? "notes" : "'' AS notes"},
-        source,
-        source_id,
-        updated_at
-      FROM concerts
-      WHERE source_id = ? OR id = ?
-      LIMIT 1
-    `;
-  }
-
-  return `
-    SELECT
-      id,
-      date,
-      end_date,
-      title,
-      main_artist,
-      supports,
-      venue,
-      venue_family,
-      city,
-      region,
-      country,
-      festival,
-      notes,
-      rating,
-      event_key,
-      updated_at
-    FROM concerts
-    WHERE event_key = ? OR id = ?
-    LIMIT 1
-  `;
-}
-
-function buildUpdateConcertNoteQuery(schema) {
-  if (schema.mode === "new") {
-    return `
-      UPDATE concerts
-      SET notes = ?, updated_at = ?
-      WHERE id = ?
-    `;
-  }
-
-  return `
-    UPDATE concerts
-    SET notes = ?
-    WHERE id = ?
-  `;
-}
-
-function mapConcertRowToApi(row, schema) {
+function mapArchiveConcertRow(row) {
   if (!row) return null;
 
-  if (schema.mode === "new") {
-    const title = asText(row.title);
-    const mainArtist = asText(row.artists_main) || title;
-    const allArtists = splitArtists(row.artists_all || row.artists_main || title);
-    const date = asText(row.date_local);
-    const venue = asText(row.venue_name);
-    const city = titleCaseCity(row.city);
-    const country = asText(row.country);
-
-    const isFestival =
-      /festival/i.test(title) ||
-      allArtists.length > 4;
-
-    const supports = allArtists
-      .filter((name) => normalizeArtistName(name) !== normalizeArtistName(mainArtist))
-      .join(", ");
-
-    const venueFamily = normalizeVenueFamily(venue);
-
-    return {
-      id: row.id,
-      date,
-      end_date: date,
-      title,
-      main_artist: mainArtist,
-      supports,
-      venue,
-      venue_family: venueFamily,
-      city,
-      region: null,
-      country,
-      festival: isFestival ? 1 : 0,
-      notes: schema.hasNotesColumn ? asText(row.notes) : "",
-      rating: null,
-      event_key: asText(row.source_id || row.id),
-      updated_at: row.updated_at,
-      url: asText(row.url),
-      image_url: asText(row.image_url),
-      genre_hint: asText(row.genre_hint),
-    };
-  }
+  const mainArtist = asText(row.main_artist) || asText(row.title);
+  const supportsArr = splitArtists(row.supports).filter(
+    (x) => x.toLowerCase() !== mainArtist.toLowerCase()
+  );
 
   return {
     id: row.id,
     date: asText(row.date),
     end_date: asText(row.end_date || row.date),
     title: asText(row.title || row.main_artist),
-    main_artist: asText(row.main_artist || row.title),
-    supports: asText(row.supports),
+    main_artist: mainArtist,
+    supports: supportsArr.join(", "),
     venue: asText(row.venue),
-    venue_family: asText(row.venue_family || normalizeVenueFamily(row.venue)),
-    city: titleCaseCity(row.city),
+    venue_family: asText(row.venue_family || row.venue),
+    city: titleCaseWords(row.city),
     region: asText(row.region) || null,
     country: asText(row.country),
     festival: Number(row.festival || 0),
@@ -657,28 +459,11 @@ function mapConcertRowToApi(row, schema) {
     rating: row.rating ?? null,
     event_key: asText(row.event_key || row.id),
     updated_at: row.updated_at,
-    url: "",
-    image_url: "",
-    genre_hint: "",
+    url: asText(row.url),
+    image_url: asText(row.image_url),
+    genre_hint: asText(row.genre_hint),
   };
 }
-
-function normalizeVenueFamily(venue) {
-  const v = asText(venue);
-  if (!v) return "";
-
-  const lower = v.toLowerCase();
-
-  if (lower.includes("de helling")) return "TivoliVredenburg";
-  if (lower.includes("tivolivredenburg")) return "TivoliVredenburg";
-  if (lower.includes("ronda")) return "TivoliVredenburg";
-  if (lower.includes("cloud nine")) return "TivoliVredenburg";
-  if (lower.includes("hertz")) return "TivoliVredenburg";
-  if (lower.includes("pandora")) return "TivoliVredenburg";
-
-  return v;
-}
-
 async function getStoredSetlist(env, eventKey) {
   return await env.ARCHIVE_DB
     .prepare(`
@@ -772,20 +557,44 @@ async function upsertSetlist(env, input) {
     .bind(eventKey, source, sourceUrl, setlistJson, now, now)
     .run();
 
-  const inserted = await getStoredSetlist(env, eventKey);
-  return mapSetlistRow(inserted);
+    const inserted = await getStoredSetlist(env, eventKey);
+    return mapSetlistRow(inserted);
 }
+
 async function refreshConcertSetlist(env, eventKey, { debug = false, force = false } = {}) {
   const setlistApiKey = String(env.SETLISTFM_API_KEY || "").trim();
   if (!setlistApiKey) {
     return { ok: false, error: "Missing SETLISTFM_API_KEY", status: 500 };
   }
 
-  const schema = await getConcertSchema(env);
-
   const concertRow = await env.ARCHIVE_DB
-    .prepare(buildFindConcertByEventKeyQuery(schema))
-    .bind(eventKey, eventKey)
+    .prepare(`
+      SELECT
+        id,
+        event_key,
+        date,
+        end_date,
+        title,
+        main_artist,
+        supports,
+        venue,
+        venue_family,
+        city,
+        region,
+        country,
+        festival,
+        notes,
+        rating,
+        url,
+        image_url,
+        genre_hint,
+        created_at,
+        updated_at
+      FROM archive_concerts
+      WHERE event_key = ?
+      LIMIT 1
+    `)
+    .bind(eventKey)
     .first();
 
   if (!concertRow) {
@@ -802,7 +611,7 @@ async function refreshConcertSetlist(env, eventKey, { debug = false, force = fal
     };
   }
 
-  const concert = mapConcertRowToApi(concertRow, schema);
+  const concert = mapArchiveConcertRow(concertRow);
   const fetched = await findSetlistForConcert(concert, setlistApiKey, { debug });
 
   if (!fetched?.ok || !fetched?.setlist) {
@@ -871,7 +680,6 @@ async function findSetlistForConcert(concert, apiKey, { debug = false } = {}) {
     const params = Object.fromEntries(
       Object.entries(attempt.params).filter(([, v]) => asText(v))
     );
-
     if (!Object.keys(params).length) continue;
 
     const results = await setlistFmSearchSetlists(apiKey, params).catch(() => []);
@@ -910,13 +718,7 @@ async function findSetlistForConcert(concert, apiKey, { debug = false } = {}) {
   if (!best || bestScore < 75) {
     return {
       ok: false,
-      debug: debug
-        ? {
-            reason: "no_candidate_above_threshold",
-            bestScore,
-            attempts: debugAttempts,
-          }
-        : undefined,
+      debug: debug ? { reason: "no_candidate_above_threshold", bestScore, attempts: debugAttempts } : undefined,
     };
   }
 
@@ -924,15 +726,7 @@ async function findSetlistForConcert(concert, apiKey, { debug = false } = {}) {
   if (!normalized?.sets?.length) {
     return {
       ok: false,
-      debug: debug
-        ? {
-            reason: "best_candidate_has_no_parsed_sets",
-            bestScore,
-            bestId: asText(best?.id),
-            bestUrl: asText(best?.url),
-            attempts: debugAttempts,
-          }
-        : undefined,
+      debug: debug ? { reason: "best_candidate_has_no_parsed_sets", bestScore, attempts: debugAttempts } : undefined,
     };
   }
 
@@ -947,17 +741,9 @@ async function findSetlistForConcert(concert, apiKey, { debug = false } = {}) {
       city,
       sets: normalized.sets,
     },
-    debug: debug
-      ? {
-          bestScore,
-          bestId: asText(best?.id),
-          bestUrl: asText(best?.url),
-          attempts: debugAttempts,
-        }
-      : undefined,
+    debug: debug ? { bestScore, bestUrl: asText(best?.url), attempts: debugAttempts } : undefined,
   };
 }
-
 async function setlistFmSearchSetlists(apiKey, params) {
   const u = new URL("https://api.setlist.fm/rest/1.0/search/setlists");
   for (const [k, v] of Object.entries(params || {})) {
@@ -978,7 +764,6 @@ async function setlistFmSearchSetlists(apiKey, params) {
 
   const j = await r.json().catch(() => ({}));
   const arr = j?.setlist;
-
   if (Array.isArray(arr)) return arr;
   if (arr && typeof arr === "object") return [arr];
   return [];
@@ -986,37 +771,29 @@ async function setlistFmSearchSetlists(apiKey, params) {
 
 function scoreSetlistCandidate(concert, item) {
   const concertArtist = normalizeLoose(concert?.main_artist);
-  const concertDateIso = asText(concert?.date);
-  const concertDateFm = isoDateToSetlistFmDate(concertDateIso);
+  const concertDateFm = isoDateToSetlistFmDate(concert?.date);
   const concertCity = normalizeLoose(concert?.city);
-  const concertVenue = normalizeLoose(stripVenueFamilyBits(concert?.venue));
+  const concertVenue = normalizeLoose(concert?.venue);
 
   const itemArtist = normalizeLoose(item?.artist?.name);
   const itemDateFm = asText(item?.eventDate);
   const itemCity = normalizeLoose(item?.venue?.city?.name);
-  const itemVenue = normalizeLoose(stripVenueFamilyBits(item?.venue?.name));
+  const itemVenue = normalizeLoose(item?.venue?.name);
 
   let score = 0;
-
   if (concertArtist && itemArtist) {
     if (concertArtist === itemArtist) score += 45;
     else if (concertArtist.includes(itemArtist) || itemArtist.includes(concertArtist)) score += 30;
   }
-
-  if (concertDateFm && itemDateFm) {
-    if (concertDateFm === itemDateFm) score += 35;
-  }
-
+  if (concertDateFm && itemDateFm && concertDateFm === itemDateFm) score += 35;
   if (concertCity && itemCity) {
     if (concertCity === itemCity) score += 12;
     else if (concertCity.includes(itemCity) || itemCity.includes(concertCity)) score += 6;
   }
-
   if (concertVenue && itemVenue) {
     if (concertVenue === itemVenue) score += 18;
     else if (concertVenue.includes(itemVenue) || itemVenue.includes(concertVenue)) score += 10;
   }
-
   return score;
 }
 
@@ -1028,48 +805,28 @@ function normalizeSetlistFmItem(item) {
     .map((setObj, idx) => {
       const rawSongs = setObj?.song;
       const songArr = Array.isArray(rawSongs) ? rawSongs : (rawSongs ? [rawSongs] : []);
-
       const songs = songArr
-        .map((song) => typeof song === "string" ? asText(song) : asText(song?.name))
+        .map((song) => (typeof song === "string" ? asText(song) : asText(song?.name)))
         .filter(Boolean);
 
-      const setName =
-        asText(setObj?.name) ||
-        asText(setObj?.encore) ||
-        (idx === 0 ? "Set" : `Set ${idx + 1}`);
-
+      const setName = asText(setObj?.name) || (idx === 0 ? "Set" : `Set ${idx + 1}`);
       return songs.length ? { name: setName, songs } : null;
     })
     .filter(Boolean);
 
   return { sets };
 }
+
 async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApiKey, debug = false) {
   const sets = Array.isArray(setlist?.sets) ? setlist.sets : [];
   const allSongs = sets.flatMap((s) => Array.isArray(s?.songs) ? s.songs : []).filter(Boolean);
 
   if (!allSongs.length) {
-    return {
-      setlist: {
-        ...setlist,
-        estimated_duration_sec: null,
-        matched_tracks: 0,
-        total_tracks: 0,
-      },
-      debug: debug ? { reason: "no_songs" } : undefined,
-    };
+    return { setlist: { ...setlist, estimated_duration_sec: null, matched_tracks: 0, total_tracks: 0 } };
   }
 
   if (!asText(lastfmApiKey)) {
-    return {
-      setlist: {
-        ...setlist,
-        estimated_duration_sec: null,
-        matched_tracks: 0,
-        total_tracks: allSongs.length,
-      },
-      debug: debug ? { reason: "missing_lastfm_api_key" } : undefined,
-    };
+    return { setlist: { ...setlist, estimated_duration_sec: null, matched_tracks: 0, total_tracks: allSongs.length } };
   }
 
   let totalMs = 0;
@@ -1092,8 +849,6 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
         matched: !!(result && Number.isFinite(result.duration_ms) && result.duration_ms > 0),
         duration_ms: result?.duration_ms ?? null,
         variant_used: result?.variant_used || null,
-        returned_track: result?.track_name || null,
-        returned_artist: result?.artist_name || null,
       });
     }
   }
@@ -1105,14 +860,7 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
       matched_tracks: matched,
       total_tracks: allSongs.length,
     },
-    debug: debug
-      ? {
-          matched_tracks: matched,
-          total_tracks: allSongs.length,
-          estimated_duration_sec: matched ? Math.round(totalMs / 1000) : null,
-          songs: debugSongs,
-        }
-      : undefined,
+    debug: debug ? { matched_tracks: matched, total_tracks: allSongs.length, songs: debugSongs } : undefined,
   };
 }
 
@@ -1122,13 +870,9 @@ async function lookupBestLastfmDuration(apiKey, artistName, songTitle, nextSong 
   for (const variant of variants) {
     const result = await lookupLastfmTrackDurationMs(apiKey, artistName, variant).catch(() => null);
     if (result && Number.isFinite(result.duration_ms) && result.duration_ms > 0) {
-      return {
-        ...result,
-        variant_used: variant,
-      };
+      return { ...result, variant_used: variant };
     }
   }
-
   return null;
 }
 
@@ -1138,38 +882,19 @@ function buildTrackLookupVariants(songTitle, nextSong = "") {
   const variants = [];
   const seen = new Set();
 
-  function add(value) {
-    const v = asText(value);
-    if (!v) return;
-    const key = v.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    variants.push(v);
+  function add(v) {
+    const x = asText(v);
+    if (!x) return;
+    const k = x.toLowerCase();
+    if (seen.has(k)) return;
+    seen.add(k);
+    variants.push(x);
   }
 
   const cleaned = normalizeFancyPunctuation(original);
-  const noBoundaryEllipsis = cleaned
-    .replace(/^\.\.\.\s*/, "")
-    .replace(/\s*\.\.\.$/, "")
-    .replace(/^…\s*/, "")
-    .replace(/\s*…$/, "")
-    .trim();
-
   add(original);
   add(cleaned);
-  add(noBoundaryEllipsis);
-  add(cleaned.replace(/[.:;!?'"`()[\]{}]/g, " "));
-  add(cleaned.replace(/[–—-]/g, " "));
-  add(cleaned.replace(/\s+/g, " ").trim());
-
-  if (/[\u2026]|\.{3}/.test(original) || /^[.…]/.test(original) || /[.…]$/.test(original)) {
-    const stripped = original
-      .replace(/^\s*[.…]+\s*/, "")
-      .replace(/\s*[.…]+\s*$/, "")
-      .trim();
-    add(stripped);
-    add(normalizeFancyPunctuation(stripped));
-  }
+  add(cleaned.replace(/^\.\.\.\s*|^\u2026\s*|\s*\.\.\.$|\s*\u2026$/g, "").trim());
 
   if (original.endsWith("…") || original.endsWith("...")) {
     if (next) {
@@ -1179,11 +904,7 @@ function buildTrackLookupVariants(songTitle, nextSong = "") {
     }
   }
 
-  if (original.startsWith("…") || original.startsWith("...")) {
-    add(original.replace(/^\s*[.…]+\s*/, "").trim());
-  }
-
-  return variants.filter(Boolean);
+  return variants;
 }
 
 function normalizeFancyPunctuation(value) {
@@ -1209,29 +930,14 @@ async function lookupLastfmTrackDurationMs(apiKey, artistName, songTitle) {
   u.searchParams.set("autocorrect", "1");
   u.searchParams.set("format", "json");
 
-  const r = await fetch(u.toString(), {
-    method: "GET",
-    headers: {
-      "Accept": "application/json",
-      "User-Agent": "ListeningMirror/1.0",
-    },
-  });
-
+  const r = await fetch(u.toString(), { method: "GET" });
   if (!r.ok) return null;
 
   const j = await r.json().catch(() => ({}));
   const dur = Number(j?.track?.duration);
 
-  if (!Number.isFinite(dur) || dur <= 0) {
-    return {
-      duration_ms: null,
-      track_name: asText(j?.track?.name),
-      artist_name: asText(j?.track?.artist?.name || j?.track?.artist),
-    };
-  }
-
   return {
-    duration_ms: dur,
+    duration_ms: Number.isFinite(dur) && dur > 0 ? dur : null,
     track_name: asText(j?.track?.name),
     artist_name: asText(j?.track?.artist?.name || j?.track?.artist),
   };
@@ -1243,15 +949,7 @@ function normalizeLoose(value) {
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[()]/g, " ")
-    .replace(/\b(the|a|an)\b/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function stripVenueFamilyBits(value) {
-  return String(value || "")
-    .replace(/^tivolivredenburg\s*\((.*?)\)$/i, "$1")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -1272,9 +970,7 @@ function buildOverview(concerts) {
     if (c.venue_family) venueSet.add(c.venue_family);
     if (c.city || c.country) locationSet.add(`${c.city}|${c.country}`);
     if (c.country) countrySet.add(c.country);
-
-    const seen = new Set([c.main_artist, ...splitArtists(c.supports)]);
-    for (const a of seen) {
+    for (const a of new Set([c.main_artist, ...splitArtists(c.supports)])) {
       if (a) artistSet.add(a);
     }
   }
@@ -1294,15 +990,12 @@ function buildHighlights(concerts) {
   const topVenues = buildTopVenues(concerts, 1);
   const topCities = buildTopCities(concerts, 1);
   const mostActiveYear = buildMostActiveYear(concerts);
-
   const sortedAsc = [...concerts].sort((a, b) => String(a.date).localeCompare(String(b.date)));
   const sortedDesc = [...concerts].sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
   return {
     most_seen_artist: mostSeenArtists[0] || null,
-    top_venue: topVenues[0]
-      ? { name: topVenues[0].venue_family, total: topVenues[0].visits }
-      : null,
+    top_venue: topVenues[0] ? { name: topVenues[0].venue_family, total: topVenues[0].visits } : null,
     top_city: topCities[0] || null,
     most_active_year: mostActiveYear,
     first_concert: sortedAsc[0] || null,
@@ -1312,15 +1005,12 @@ function buildHighlights(concerts) {
 
 function buildMostSeenArtists(concerts, limit) {
   const counts = new Map();
-
   for (const c of concerts) {
-    const artists = new Set([c.main_artist, ...splitArtists(c.supports)]);
-    for (const artist of artists) {
+    for (const artist of new Set([c.main_artist, ...splitArtists(c.supports)])) {
       if (!artist) continue;
       counts.set(artist, (counts.get(artist) || 0) + 1);
     }
   }
-
   return [...counts.entries()]
     .map(([name, total]) => ({ name, total }))
     .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
@@ -1329,13 +1019,11 @@ function buildMostSeenArtists(concerts, limit) {
 
 function buildTopVenues(concerts, limit) {
   const counts = new Map();
-
   for (const c of concerts) {
     const key = c.venue_family || c.venue;
     if (!key) continue;
     counts.set(key, (counts.get(key) || 0) + 1);
   }
-
   return [...counts.entries()]
     .map(([venue_family, visits]) => ({ venue_family, visits }))
     .sort((a, b) => b.visits - a.visits || a.venue_family.localeCompare(b.venue_family))
@@ -1344,13 +1032,11 @@ function buildTopVenues(concerts, limit) {
 
 function buildTopCities(concerts, limit) {
   const counts = new Map();
-
   for (const c of concerts) {
-    const key = `${c.city}|${c.country}`;
     if (!c.city) continue;
+    const key = `${c.city}|${c.country}`;
     counts.set(key, (counts.get(key) || 0) + 1);
   }
-
   return [...counts.entries()]
     .map(([key, total]) => {
       const [city, country] = key.split("|");
@@ -1362,16 +1048,12 @@ function buildTopCities(concerts, limit) {
 
 function buildMostActiveYear(concerts) {
   const counts = new Map();
-
   for (const c of concerts) {
     const year = String(c.date || "").slice(0, 4);
     if (!/^\d{4}$/.test(year)) continue;
     counts.set(year, (counts.get(year) || 0) + 1);
   }
-
-  const top = [...counts.entries()]
+  return [...counts.entries()]
     .map(([year, total]) => ({ year, total }))
-    .sort((a, b) => b.total - a.total || b.year.localeCompare(a.year))[0];
-
-  return top || null;
+    .sort((a, b) => b.total - a.total || b.year.localeCompare(a.year))[0] || null;
 }
