@@ -1,45 +1,44 @@
-[
-{
-  "event_key": "2026-03-19-villagers-of-ioannina-city-013-tilburg",
-  "kind": "normal",
-  "title": "Villagers of Ioannina City",
-  "status": "attended",
-  "start_date": "2026-03-19",
-  "end_date": "2026-03-19",
-  "venue": {
-    "raw_name": "Poppodium 013",
-    "family_name": "Poppodium 013"
+export default [
+  {
+    "event_key": "2026-03-19-villagers-of-ioannina-city-013-tilburg",
+    "kind": "normal",
+    "title": "Villagers of Ioannina City",
+    "status": "attended",
+    "start_date": "2026-03-19",
+    "end_date": "2026-03-19",
+    "venue": {
+      "raw_name": "Poppodium 013",
+      "family_name": "Poppodium 013"
+    },
+    "city": "Tilburg",
+    "region": null,
+    "country": "Netherlands",
+    "festival_name": null,
+    "artists": [
+      { "name": "Villagers of Ioannina City", "role": "headliner", "sort_order": 1 },
+      { "name": "My Diligence", "role": "support", "sort_order": 2 }
+    ]
   },
-  "city": "Tilburg",
-  "region": null,
-  "country": "Netherlands",
-  "festival_name": null,
-  "artists": [
-    { "name": "Villagers of Ioannina City", "role": "headliner", "sort_order": 1 },
-    { "name": "My Diligence", "role": "support", "sort_order": 2 }
-  ]
-},
-  
-{
-  "event_key": "2026-03-18-villagers-of-ioannina-city-patronaat-haarlem",
-  "kind": "normal",
-  "title": "Villagers of Ioannina City",
-  "status": "attended",
-  "start_date": "2026-03-18",
-  "end_date": "2026-03-18",
-  "venue": {
-    "raw_name": "Patronaat",
-    "family_name": "Patronaat"
+  {
+    "event_key": "2026-03-18-villagers-of-ioannina-city-patronaat-haarlem",
+    "kind": "normal",
+    "title": "Villagers of Ioannina City",
+    "status": "attended",
+    "start_date": "2026-03-18",
+    "end_date": "2026-03-18",
+    "venue": {
+      "raw_name": "Patronaat",
+      "family_name": "Patronaat"
+    },
+    "city": "Haarlem",
+    "region": null,
+    "country": "Netherlands",
+    "festival_name": null,
+    "artists": [
+      { "name": "Villagers of Ioannina City", "role": "headliner", "sort_order": 1 },
+      { "name": "My Diligence", "role": "support", "sort_order": 2 }
+    ]
   },
-  "city": "Haarlem",
-  "region": null,
-  "country": "Netherlands",
-  "festival_name": null,
-  "artists": [
-    { "name": "Villagers of Ioannina City", "role": "headliner", "sort_order": 1 },
-    { "name": "My Diligence", "role": "support", "sort_order": 2 }
-  ]
-},
   {
     "event_key": "2026-03-08-psychonaut-tivolivredenburg-utrecht",
     "kind": "normal",
@@ -686,8 +685,7 @@
     "artists": [
       { "name": "Groundation", "role": "headliner", "sort_order": 1 }
     ]
-  }
-  ,
+  },
   {
     "event_key": "2024-06-27-massive-attack-spoorpark-live-tilburg",
     "kind": "normal",
@@ -910,22 +908,22 @@
     ]
   },
   {
-  "event_key": "2023-11-13-explosions-in-the-sky-tivolivredenburg-utrecht",
-  "kind": "normal",
-  "title": "Explosions in the Sky",
-  "status": "attended",
-  "start_date": "2023-11-13",
-  "end_date": "2023-11-13",
-  "venue": { "raw_name": "Grote Zaal, TivoliVredenburg", "family_name": "TivoliVredenburg" },
-  "city": "Utrecht",
-  "region": null,
-  "country": "Netherlands",
-  "festival_name": null,
-  "artists": [
-    { "name": "Explosions in the Sky", "role": "headliner", "sort_order": 1 },
-    { "name": "Spill Gold", "role": "support", "sort_order": 2 }
-  ]
-},
+    "event_key": "2023-11-13-explosions-in-the-sky-tivolivredenburg-utrecht",
+    "kind": "normal",
+    "title": "Explosions in the Sky",
+    "status": "attended",
+    "start_date": "2023-11-13",
+    "end_date": "2023-11-13",
+    "venue": { "raw_name": "Grote Zaal, TivoliVredenburg", "family_name": "TivoliVredenburg" },
+    "city": "Utrecht",
+    "region": null,
+    "country": "Netherlands",
+    "festival_name": null,
+    "artists": [
+      { "name": "Explosions in the Sky", "role": "headliner", "sort_order": 1 },
+      { "name": "Spill Gold", "role": "support", "sort_order": 2 }
+    ]
+  },
   {
     "event_key": "2023-11-04-queens-of-the-stone-age-ziggo-dome-amsterdam",
     "kind": "normal",
@@ -1202,8 +1200,7 @@
       { "name": "Mammoth WVH", "role": "support", "sort_order": 3 },
       { "name": "Another Now", "role": "support", "sort_order": 4 }
     ]
-  }
-  ,
+  },
   {
     "event_key": "2023-04-09-godspeed-you-black-emperor-paradiso-amsterdam",
     "kind": "normal",
@@ -1693,8 +1690,7 @@
       { "name": "A Perfect Circle", "role": "headliner", "sort_order": 1 },
       { "name": "Chelsea Wolfe", "role": "support", "sort_order": 2 }
     ]
-  }
-  ,
+  },
   {
     "event_key": "2018-12-08-chilly-gonzales-carre-amsterdam",
     "kind": "normal",
@@ -1746,45 +1742,45 @@
       { "name": "Afformance", "role": "support", "sort_order": 3 }
     ]
   },
-{
-  "event_key": "2014-06-06-plissken-festival-kyttaro-athens",
-  "kind": "festival",
-  "title": "Plissken Festival 2014",
-  "status": "attended",
-  "start_date": "2014-06-06",
-  "end_date": "2014-06-07",
-  "venue": { "raw_name": "Kyttaro", "family_name": "Kyttaro" },
-  "city": "Athens",
-  "region": null,
-  "country": "Greece",
-  "festival_name": "Plissken Festival 2014",
-  "artists": [
-    { "name": "65daysofstatic", "role": "festival", "sort_order": 1 },
-    { "name": "Nightmares On Wax", "role": "festival", "sort_order": 2 },
-    { "name": "Dub Pistols", "role": "festival", "sort_order": 3 },
-    { "name": "The Black Lips", "role": "festival", "sort_order": 4 },
-    { "name": "Fink", "role": "festival", "sort_order": 5 },
-    { "name": "Wooden Shjips", "role": "festival", "sort_order": 6 }
-  ]
-},
   {
-  "event_key": "2013-03-08-mono-kyttaro-athens",
-  "kind": "normal",
-  "title": "Mono",
-  "status": "attended",
-  "start_date": "2013-03-08",
-  "end_date": "2013-03-08",
-  "venue": {
-    "raw_name": "Kyttaro",
-    "family_name": "Kyttaro"
+    "event_key": "2014-06-06-plissken-festival-kyttaro-athens",
+    "kind": "festival",
+    "title": "Plissken Festival 2014",
+    "status": "attended",
+    "start_date": "2014-06-06",
+    "end_date": "2014-06-07",
+    "venue": { "raw_name": "Kyttaro", "family_name": "Kyttaro" },
+    "city": "Athens",
+    "region": null,
+    "country": "Greece",
+    "festival_name": "Plissken Festival 2014",
+    "artists": [
+      { "name": "65daysofstatic", "role": "festival", "sort_order": 1 },
+      { "name": "Nightmares On Wax", "role": "festival", "sort_order": 2 },
+      { "name": "Dub Pistols", "role": "festival", "sort_order": 3 },
+      { "name": "The Black Lips", "role": "festival", "sort_order": 4 },
+      { "name": "Fink", "role": "festival", "sort_order": 5 },
+      { "name": "Wooden Shjips", "role": "festival", "sort_order": 6 }
+    ]
   },
-  "city": "Athens",
-  "region": "Attica",
-  "country": "Greece",
-  "festival_name": null,
-  "artists": [
-    { "name": "Mono", "role": "headliner", "sort_order": 1 }
-  ]
+  {
+    "event_key": "2013-03-08-mono-kyttaro-athens",
+    "kind": "normal",
+    "title": "Mono",
+    "status": "attended",
+    "start_date": "2013-03-08",
+    "end_date": "2013-03-08",
+    "venue": {
+      "raw_name": "Kyttaro",
+      "family_name": "Kyttaro"
+    },
+    "city": "Athens",
+    "region": "Attica",
+    "country": "Greece",
+    "festival_name": null,
+    "artists": [
+      { "name": "Mono", "role": "headliner", "sort_order": 1 }
+    ]
   },
   {
     "event_key": "2012-06-27-ejekt-festival-plateia-nerou-athens",
@@ -2589,4 +2585,4 @@
       { "name": "Less Than Human", "role": "festival", "sort_order": 6 }
     ]
   }
-    ]
+];
