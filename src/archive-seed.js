@@ -44,11 +44,6 @@ function pickMainArtist(entry) {
   return normalizeWhitespace(headliner?.name || entry?.title || "");
 }
 
-function buildArtistsAll(entry) {
-  const artists = sortArtists(entry?.artists || []).map((a) => a?.name);
-  return uniqueStrings(artists).join(", ");
-}
-
 function buildSupports(entry) {
   const artists = sortArtists(entry?.artists || []);
   const main = pickMainArtist(entry).toLowerCase();
@@ -98,7 +93,6 @@ function mapSeedEntryToArchiveConcertRow(entry, nowTs) {
   }
 
   return {
-    id: eventKey,
     event_key: eventKey,
     date,
     end_date: endDate,
@@ -124,7 +118,7 @@ function mapSeedEntryToArchiveConcertRow(entry, nowTs) {
 async function ensureArchiveTables(env) {
   await env.ARCHIVE_DB.prepare(`
     CREATE TABLE IF NOT EXISTS archive_concerts (
-      id TEXT PRIMARY KEY,
+      id INTEGER PRIMARY KEY,
       event_key TEXT NOT NULL,
       date TEXT NOT NULL,
       end_date TEXT,
@@ -142,8 +136,8 @@ async function ensureArchiveTables(env) {
       url TEXT,
       image_url TEXT,
       genre_hint TEXT,
-      created_at INTEGER,
-      updated_at INTEGER
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
     )
   `).run();
 
@@ -177,7 +171,6 @@ async function upsertArchiveConcert(env, row) {
 
   await env.ARCHIVE_DB.prepare(`
     INSERT INTO archive_concerts (
-      id,
       event_key,
       date,
       end_date,
@@ -197,9 +190,8 @@ async function upsertArchiveConcert(env, row) {
       genre_hint,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(event_key) DO UPDATE SET
-      id = excluded.id,
       date = excluded.date,
       end_date = excluded.end_date,
       title = excluded.title,
@@ -211,12 +203,13 @@ async function upsertArchiveConcert(env, row) {
       region = excluded.region,
       country = excluded.country,
       festival = excluded.festival,
+      notes = excluded.notes,
+      rating = excluded.rating,
       url = excluded.url,
       image_url = excluded.image_url,
       genre_hint = excluded.genre_hint,
       updated_at = excluded.updated_at
   `).bind(
-    row.id,
     row.event_key,
     row.date,
     row.end_date,
