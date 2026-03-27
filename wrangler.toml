@@ -1,11 +1,15 @@
 name = "listening-mirror-archive"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
+keep_vars = true
 
 [[d1_databases]]
 binding = "ARCHIVE_DB"
 database_name = "listening-mirror-archive"
 database_id = "9af28707-ff7e-43a5-9ff2-a713f1f46aaf"
+
 [observability]
 enabled = true
- 
+
+[secrets]
+required = ["SETLISTFM_API_KEY", "LASTFM_API_KEY"]
