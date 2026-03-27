@@ -49,26 +49,43 @@ function buildArtistsAll(entry) {
   return uniqueStrings(artists).join(", ");
 }
 
+function buildSupports(entry) {
+  const artists = sortArtists(entry?.artists || []);
+  const main = pickMainArtist(entry).toLowerCase();
+
+  const supports = artists
+    .map((a) => normalizeWhitespace(a?.name))
+    .filter(Boolean)
+    .filter((name) => name.toLowerCase() !== main);
+
+  return uniqueStrings(supports).join(", ");
+}
+
 function isFestivalEntry(entry) {
   const kind = asText(entry?.kind).toLowerCase();
   return kind === "festival" || !!asText(entry?.festival_name);
 }
 
-function mapSeedEntryToConcertRow(entry, nowTs) {
+function mapSeedEntryToArchiveConcertRow(entry, nowTs) {
   const eventKey = asText(entry?.event_key);
   const title = normalizeWhitespace(entry?.title);
   const mainArtist = pickMainArtist(entry);
-  const artistsAll = buildArtistsAll(entry);
-  const dateLocal = asText(entry?.start_date);
-  const timeLocal = "";
-  const venueName = normalizeWhitespace(entry?.venue?.raw_name || entry?.venue?.family_name);
+  const supports = buildSupports(entry);
+  const date = asText(entry?.start_date);
+  const endDate = asText(entry?.end_date || entry?.start_date);
+  const venue = normalizeWhitespace(entry?.venue?.raw_name || entry?.venue?.family_name);
+  const venueFamily = normalizeWhitespace(entry?.venue?.family_name || entry?.venue?.raw_name);
   const city = normalizeWhitespace(entry?.city);
+  const region = normalizeWhitespace(entry?.region);
   const country = normalizeWhitespace(entry?.country);
-  const imageUrl = "";
+  const festival = isFestivalEntry(entry) ? 1 : 0;
   const url = "";
+  const imageUrl = "";
   const genreHint = isFestivalEntry(entry)
     ? normalizeWhitespace(entry?.festival_name || entry?.title)
     : "";
+  const notes = "";
+  const rating = null;
 
   if (!eventKey) {
     throw new Error(`Seed entry missing event_key: ${JSON.stringify(entry)}`);
@@ -76,27 +93,29 @@ function mapSeedEntryToConcertRow(entry, nowTs) {
   if (!title) {
     throw new Error(`Seed entry missing title for ${eventKey}`);
   }
-  if (!dateLocal) {
+  if (!date) {
     throw new Error(`Seed entry missing start_date for ${eventKey}`);
   }
 
   return {
     id: eventKey,
-    source: "seed",
-    source_id: eventKey,
+    event_key: eventKey,
+    date,
+    end_date: endDate,
     title,
-    artists_main: mainArtist || title,
-    artists_all: artistsAll || mainArtist || title,
-    raw_title: title,
-    date_local: dateLocal,
-    time_local: timeLocal,
-    venue_name: venueName,
+    main_artist: mainArtist || title,
+    supports,
+    venue,
+    venue_family: venueFamily || venue,
     city,
+    region: region || null,
     country,
+    festival,
+    notes,
+    rating,
     url,
     image_url: imageUrl,
     genre_hint: genreHint,
-    fetched_at: nowTs,
     created_at: nowTs,
     updated_at: nowTs,
   };
@@ -104,36 +123,33 @@ function mapSeedEntryToConcertRow(entry, nowTs) {
 
 async function ensureArchiveTables(env) {
   await env.ARCHIVE_DB.prepare(`
-    CREATE TABLE IF NOT EXISTS concerts (
+    CREATE TABLE IF NOT EXISTS archive_concerts (
       id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      source_id TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      date TEXT NOT NULL,
+      end_date TEXT,
       title TEXT NOT NULL,
-      artists_main TEXT,
-      artists_all TEXT,
-      raw_title TEXT,
-      date_local TEXT,
-      time_local TEXT,
-      venue_name TEXT,
+      main_artist TEXT,
+      supports TEXT,
+      venue TEXT,
+      venue_family TEXT,
       city TEXT,
+      region TEXT,
       country TEXT,
-      url TEXT NOT NULL DEFAULT '',
+      festival INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      rating INTEGER,
+      url TEXT,
       image_url TEXT,
       genre_hint TEXT,
-      fetched_at INTEGER,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      created_at INTEGER,
+      updated_at INTEGER
     )
   `).run();
 
   await env.ARCHIVE_DB.prepare(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_concerts_source_source_id
-    ON concerts(source, source_id)
-  `).run();
-
-  await env.ARCHIVE_DB.prepare(`
-    CREATE INDEX IF NOT EXISTS idx_concerts_date_local
-    ON concerts(date_local)
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_archive_concerts_event_key
+    ON archive_concerts(event_key)
   `).run();
 
   await env.ARCHIVE_DB.prepare(`
@@ -149,77 +165,81 @@ async function ensureArchiveTables(env) {
   `).run();
 }
 
-async function upsertConcert(env, row) {
+async function upsertArchiveConcert(env, row) {
   const existing = await env.ARCHIVE_DB.prepare(`
     SELECT id, created_at
-    FROM concerts
-    WHERE id = ?
+    FROM archive_concerts
+    WHERE event_key = ?
     LIMIT 1
-  `).bind(row.id).first();
+  `).bind(row.event_key).first();
 
   const createdAt = existing?.created_at ?? row.created_at;
 
   await env.ARCHIVE_DB.prepare(`
-    INSERT INTO concerts (
+    INSERT INTO archive_concerts (
       id,
-      source,
-      source_id,
+      event_key,
+      date,
+      end_date,
       title,
-      artists_main,
-      artists_all,
-      raw_title,
-      date_local,
-      time_local,
-      venue_name,
+      main_artist,
+      supports,
+      venue,
+      venue_family,
       city,
+      region,
       country,
+      festival,
+      notes,
+      rating,
       url,
       image_url,
       genre_hint,
-      fetched_at,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      source = excluded.source,
-      source_id = excluded.source_id,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(event_key) DO UPDATE SET
+      id = excluded.id,
+      date = excluded.date,
+      end_date = excluded.end_date,
       title = excluded.title,
-      artists_main = excluded.artists_main,
-      artists_all = excluded.artists_all,
-      raw_title = excluded.raw_title,
-      date_local = excluded.date_local,
-      time_local = excluded.time_local,
-      venue_name = excluded.venue_name,
+      main_artist = excluded.main_artist,
+      supports = excluded.supports,
+      venue = excluded.venue,
+      venue_family = excluded.venue_family,
       city = excluded.city,
+      region = excluded.region,
       country = excluded.country,
+      festival = excluded.festival,
       url = excluded.url,
       image_url = excluded.image_url,
       genre_hint = excluded.genre_hint,
-      fetched_at = excluded.fetched_at,
       updated_at = excluded.updated_at
   `).bind(
     row.id,
-    row.source,
-    row.source_id,
+    row.event_key,
+    row.date,
+    row.end_date,
     row.title,
-    row.artists_main,
-    row.artists_all,
-    row.raw_title,
-    row.date_local,
-    row.time_local,
-    row.venue_name,
+    row.main_artist,
+    row.supports,
+    row.venue,
+    row.venue_family,
     row.city,
+    row.region,
     row.country,
+    row.festival,
+    row.notes,
+    row.rating,
     row.url,
     row.image_url,
     row.genre_hint,
-    row.fetched_at,
     createdAt,
     row.updated_at
   ).run();
 
   return {
-    event_key: row.id,
+    event_key: row.event_key,
     existed: !!existing,
   };
 }
@@ -240,8 +260,8 @@ export async function seedArchiveToDb(env) {
 
   for (const entry of items) {
     try {
-      const row = mapSeedEntryToConcertRow(entry, nowTs);
-      const result = await upsertConcert(env, row);
+      const row = mapSeedEntryToArchiveConcertRow(entry, nowTs);
+      const result = await upsertArchiveConcert(env, row);
 
       if (result.existed) updated += 1;
       else inserted += 1;
@@ -255,7 +275,7 @@ export async function seedArchiveToDb(env) {
 
   const count = await env.ARCHIVE_DB.prepare(`
     SELECT COUNT(*) AS total
-    FROM concerts
+    FROM archive_concerts
   `).first();
 
   return {
@@ -265,7 +285,7 @@ export async function seedArchiveToDb(env) {
     inserted,
     updated,
     errors,
-    concerts_total: Number(count?.total ?? 0),
+    archive_total: Number(count?.total ?? 0),
   };
 }
 
@@ -275,11 +295,14 @@ export function getSeedPreview(limit = 5) {
     event_key: asText(entry?.event_key),
     title: normalizeWhitespace(entry?.title),
     date: asText(entry?.start_date),
+    end_date: asText(entry?.end_date || entry?.start_date),
     venue: normalizeWhitespace(entry?.venue?.raw_name || entry?.venue?.family_name),
+    venue_family: normalizeWhitespace(entry?.venue?.family_name || entry?.venue?.raw_name),
     city: normalizeWhitespace(entry?.city),
     country: normalizeWhitespace(entry?.country),
-    artists_main: pickMainArtist(entry),
-    artists_all: buildArtistsAll(entry),
+    main_artist: pickMainArtist(entry),
+    supports: buildSupports(entry),
+    festival: isFestivalEntry(entry) ? 1 : 0,
   }));
 }
 
