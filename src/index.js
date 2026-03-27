@@ -17,7 +17,7 @@ export default {
     time: new Date().toISOString(),
   });
     }
-
+ 
     if (url.pathname === "/db-check") {
       try {
         const concertsInfo = await env.ARCHIVE_DB
