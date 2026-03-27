@@ -1,3 +1,5 @@
+import { seedArchiveToDb, getSeedPreview } from "./archive-seed.js";
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -13,9 +15,46 @@ export default {
       return json({
         ok: true,
         worker: "listening-mirror-archive",
-        build_marker: "ARCHIVE_CONCERTS_V1",
+        build_marker: "ARCHIVE_CONCERTS_V2_GITHUB_SEED",
         time: new Date().toISOString(),
       });
+    }
+
+    if (url.pathname === "/seed-preview") {
+      return json({
+        ok: true,
+        source: "seed.js",
+        preview: getSeedPreview(10),
+      });
+    }
+
+    if (url.pathname === "/seed-import") {
+      try {
+        const providedKey = String(url.searchParams.get("key") || "").trim();
+        const expectedKey = String(env.SEED_IMPORT_KEY || "").trim();
+
+        if (!expectedKey) {
+          return json({
+            ok: false,
+            error: "Missing SEED_IMPORT_KEY",
+          }, 500);
+        }
+
+        if (!providedKey || providedKey !== expectedKey) {
+          return json({
+            ok: false,
+            error: "Unauthorized",
+          }, 401);
+        }
+
+        const result = await seedArchiveToDb(env);
+        return json(result, result.ok ? 200 : 207);
+      } catch (err) {
+        return json({
+          ok: false,
+          error: String(err),
+        }, 500);
+      }
     }
 
     if (url.pathname === "/db-check") {
@@ -50,6 +89,7 @@ export default {
           setlists_total: setlistsCount?.total ?? 0,
           has_setlistfm_api_key: !!String(env.SETLISTFM_API_KEY || "").trim(),
           has_lastfm_api_key: !!String(env.LASTFM_API_KEY || "").trim(),
+          has_seed_import_key: !!String(env.SEED_IMPORT_KEY || "").trim(),
         });
       } catch (err) {
         return json({ ok: false, error: String(err) }, 500);
@@ -223,7 +263,8 @@ export default {
         return json({ ok: false, error: String(err) }, 500);
       }
     }
-if (url.pathname === "/concert-setlist" && request.method === "GET") {
+
+    if (url.pathname === "/concert-setlist" && request.method === "GET") {
       try {
         const eventKey = asText(url.searchParams.get("event_key"));
         const debug = asText(url.searchParams.get("debug")) === "1";
@@ -464,6 +505,7 @@ function mapArchiveConcertRow(row) {
     genre_hint: asText(row.genre_hint),
   };
 }
+
 async function getStoredSetlist(env, eventKey) {
   return await env.ARCHIVE_DB
     .prepare(`
@@ -557,8 +599,8 @@ async function upsertSetlist(env, input) {
     .bind(eventKey, source, sourceUrl, setlistJson, now, now)
     .run();
 
-    const inserted = await getStoredSetlist(env, eventKey);
-    return mapSetlistRow(inserted);
+  const inserted = await getStoredSetlist(env, eventKey);
+  return mapSetlistRow(inserted);
 }
 
 async function refreshConcertSetlist(env, eventKey, { debug = false, force = false } = {}) {
@@ -744,6 +786,7 @@ async function findSetlistForConcert(concert, apiKey, { debug = false } = {}) {
     debug: debug ? { bestScore, bestUrl: asText(best?.url), attempts: debugAttempts } : undefined,
   };
 }
+
 async function setlistFmSearchSetlists(apiKey, params) {
   const u = new URL("https://api.setlist.fm/rest/1.0/search/setlists");
   for (const [k, v] of Object.entries(params || {})) {
@@ -822,11 +865,17 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
   const allSongs = sets.flatMap((s) => Array.isArray(s?.songs) ? s.songs : []).filter(Boolean);
 
   if (!allSongs.length) {
-    return { setlist: { ...setlist, estimated_duration_sec: null, matched_tracks: 0, total_tracks: 0 } };
+    return {
+      setlist: { ...setlist, estimated_duration_sec: null, matched_tracks: 0, total_tracks: 0 },
+      debug: debug ? { reason: "no_songs" } : undefined,
+    };
   }
 
   if (!asText(lastfmApiKey)) {
-    return { setlist: { ...setlist, estimated_duration_sec: null, matched_tracks: 0, total_tracks: allSongs.length } };
+    return {
+      setlist: { ...setlist, estimated_duration_sec: null, matched_tracks: 0, total_tracks: allSongs.length },
+      debug: debug ? { reason: "missing_lastfm_api_key" } : undefined,
+    };
   }
 
   let totalMs = 0;
@@ -849,6 +898,8 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
         matched: !!(result && Number.isFinite(result.duration_ms) && result.duration_ms > 0),
         duration_ms: result?.duration_ms ?? null,
         variant_used: result?.variant_used || null,
+        returned_track: result?.track_name || null,
+        returned_artist: result?.artist_name || null,
       });
     }
   }
@@ -860,7 +911,14 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
       matched_tracks: matched,
       total_tracks: allSongs.length,
     },
-    debug: debug ? { matched_tracks: matched, total_tracks: allSongs.length, songs: debugSongs } : undefined,
+    debug: debug
+      ? {
+          matched_tracks: matched,
+          total_tracks: allSongs.length,
+          estimated_duration_sec: matched ? Math.round(totalMs / 1000) : null,
+          songs: debugSongs,
+        }
+      : undefined,
   };
 }
 
@@ -873,6 +931,7 @@ async function lookupBestLastfmDuration(apiKey, artistName, songTitle, nextSong 
       return { ...result, variant_used: variant };
     }
   }
+
   return null;
 }
 
@@ -892,19 +951,28 @@ function buildTrackLookupVariants(songTitle, nextSong = "") {
   }
 
   const cleaned = normalizeFancyPunctuation(original);
+  const stripped = cleaned
+    .replace(/^\.\.\.\s*|^\u2026\s*/g, "")
+    .replace(/\s*\.\.\.$|\s*\u2026$/g, "")
+    .trim();
+
   add(original);
   add(cleaned);
-  add(cleaned.replace(/^\.\.\.\s*|^\u2026\s*|\s*\.\.\.$|\s*\u2026$/g, "").trim());
+  add(stripped);
+  add(cleaned.replace(/[.:;!?'"`()[\]{}]/g, " ").replace(/\s+/g, " ").trim());
+  add(cleaned.replace(/[–—-]/g, " ").replace(/\s+/g, " ").trim());
 
-  if (original.endsWith("…") || original.endsWith("...")) {
-    if (next) {
-      const merged = `${original.replace(/[.…]+\s*$/, "").trim()} ${next.replace(/^\s*[.…]+\s*/, "").trim()}`.trim();
-      add(merged);
-      add(normalizeFancyPunctuation(merged));
-    }
+  if ((original.endsWith("…") || original.endsWith("...")) && next) {
+    const merged = `${original.replace(/[.…]+\s*$/, "").trim()} ${next.replace(/^\s*[.…]+\s*/, "").trim()}`.trim();
+    add(merged);
+    add(normalizeFancyPunctuation(merged));
   }
 
-  return variants;
+  if (original.startsWith("…") || original.startsWith("...")) {
+    add(original.replace(/^\s*[.…]+\s*/, "").trim());
+  }
+
+  return variants.filter(Boolean);
 }
 
 function normalizeFancyPunctuation(value) {
@@ -1056,4 +1124,4 @@ function buildMostActiveYear(concerts) {
   return [...counts.entries()]
     .map(([year, total]) => ({ year, total }))
     .sort((a, b) => b.total - a.total || b.year.localeCompare(a.year))[0] || null;
-}
+          }
