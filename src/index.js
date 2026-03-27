@@ -8,7 +8,7 @@ export default {
         headers: corsHeaders(),
       });
     }
-
+ 
     if (url.pathname === "/" || url.pathname === "/health") {
       return json({
         ok: true,
