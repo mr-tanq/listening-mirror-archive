@@ -10,11 +10,12 @@ export default {
     }
 
     if (url.pathname === "/" || url.pathname === "/health") {
-      return json({
-        ok: true,
-        worker: "listening-mirror-archive",
-        time: new Date().toISOString(),
-      });
+  return json({
+    ok: true,
+    worker: "listening-mirror-archive",
+    build_marker: "GITHUB_VARIANT_TEST_123",
+    time: new Date().toISOString(),
+  });
     }
 
     if (url.pathname === "/db-check") {
