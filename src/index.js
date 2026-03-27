@@ -15,7 +15,7 @@ export default {
       return json({
         ok: true,
         worker: "listening-mirror-archive",
-        build_marker: "ARCHIVE_CONCERTS_V2_GITHUB_SEED",
+        build_marker: "ARCHIVE_CONCERTS_V3_BACKFILL",
         time: new Date().toISOString(),
       });
     }
@@ -406,6 +406,108 @@ export default {
           event_key: eventKey,
           item: result.item,
           debug: debug ? result.debug || null : undefined,
+        });
+      } catch (err) {
+        return json({ ok: false, error: String(err) }, 500);
+      }
+    }
+
+    if (url.pathname === "/setlists-backfill" && request.method === "GET") {
+      try {
+        const providedKey = String(url.searchParams.get("key") || "").trim();
+        const expectedKey = String(env.SEED_IMPORT_KEY || "").trim();
+        const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 10), 50));
+        const offset = Math.max(0, Number(url.searchParams.get("offset") || 0));
+
+        if (!expectedKey) {
+          return json({ ok: false, error: "Missing SEED_IMPORT_KEY" }, 500);
+        }
+
+        if (!providedKey || providedKey !== expectedKey) {
+          return json({ ok: false, error: "Unauthorized" }, 401);
+        }
+
+        const rows = await env.ARCHIVE_DB
+          .prepare(`
+            SELECT
+              event_key,
+              date,
+              main_artist,
+              venue,
+              city
+            FROM archive_concerts
+            ORDER BY date DESC, id DESC
+            LIMIT ? OFFSET ?
+          `)
+          .bind(limit, offset)
+          .all();
+
+        const items = rows.results || [];
+        let attempted = 0;
+        let saved = 0;
+        let failed = 0;
+        const results = [];
+
+        for (const row of items) {
+          const eventKey = asText(row?.event_key);
+          if (!eventKey) continue;
+
+          attempted += 1;
+
+          try {
+            const result = await refreshConcertSetlist(env, eventKey, { debug: false, force: false });
+
+            if (result?.ok) {
+              saved += 1;
+              results.push({
+                event_key: eventKey,
+                status: "saved",
+                artist: asText(row?.main_artist),
+                date: asText(row?.date),
+                city: asText(row?.city),
+                venue: asText(row?.venue),
+              });
+            } else {
+              failed += 1;
+              results.push({
+                event_key: eventKey,
+                status: "failed",
+                error: asText(result?.error || "Unknown error"),
+                artist: asText(row?.main_artist),
+                date: asText(row?.date),
+                city: asText(row?.city),
+                venue: asText(row?.venue),
+              });
+            }
+          } catch (err) {
+            failed += 1;
+            results.push({
+              event_key: eventKey,
+              status: "failed",
+              error: String(err),
+              artist: asText(row?.main_artist),
+              date: asText(row?.date),
+              city: asText(row?.city),
+              venue: asText(row?.venue),
+            });
+          }
+        }
+
+        const setlistsCount = await env.ARCHIVE_DB
+          .prepare(`SELECT COUNT(*) AS total FROM concert_setlists`)
+          .first();
+
+        return json({
+          ok: true,
+          attempted,
+          saved,
+          failed,
+          limit,
+          offset,
+          next_offset: offset + items.length,
+          has_more: items.length === limit,
+          setlists_total: Number(setlistsCount?.total ?? 0),
+          results,
         });
       } catch (err) {
         return json({ ok: false, error: String(err) }, 500);
@@ -1124,4 +1226,4 @@ function buildMostActiveYear(concerts) {
   return [...counts.entries()]
     .map(([year, total]) => ({ year, total }))
     .sort((a, b) => b.total - a.total || b.year.localeCompare(a.year))[0] || null;
-          }
+                       }
