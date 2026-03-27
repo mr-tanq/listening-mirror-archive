@@ -8,22 +8,23 @@ export default {
         headers: corsHeaders(),
       });
     }
-  
+
     if (url.pathname === "/" || url.pathname === "/health") {
-  return json({
-    ok: true,
-    worker: "listening-mirror-archive",
-    build_marker: "GITHUB_VARIANT_TEST_123",
-    time: new Date().toISOString(),
-  });
+      return json({
+        ok: true,
+        worker: "listening-mirror-archive",
+        build_marker: "GITHUB_VARIANT_TEST_123",
+        time: new Date().toISOString(),
+      });
     }
- 
+
     if (url.pathname === "/db-check") {
       try {
         const concertsInfo = await env.ARCHIVE_DB
           .prepare("PRAGMA table_info(concerts)")
           .all();
 
+        const concertsColumns = concertsInfo.results || [];
         const concertsCount = await env.ARCHIVE_DB
           .prepare("SELECT COUNT(*) AS total FROM concerts")
           .first();
@@ -44,8 +45,9 @@ export default {
         return json({
           ok: true,
           binding: "ARCHIVE_DB",
-          schema_mode: detectSchemaMode(concertsInfo.results || []),
-          concerts_columns: concertsInfo.results || [],
+          schema_mode: detectSchemaMode(concertsColumns),
+          has_notes_column: schemaHasColumn(concertsColumns, "notes"),
+          concerts_columns: concertsColumns,
           concerts_total: concertsCount?.total ?? 0,
           setlists_columns: setlistsInfo.results || [],
           setlists_total: setlistsCount?.total ?? 0,
@@ -72,6 +74,7 @@ export default {
         return json({
           ok: true,
           schema_mode: schema.mode,
+          has_notes_column: schema.hasNotesColumn,
           total: items.length,
           items,
         });
@@ -93,6 +96,7 @@ export default {
         return json({
           ok: true,
           schema_mode: schema.mode,
+          has_notes_column: schema.hasNotesColumn,
           overview: buildOverview(concerts),
           highlights: buildHighlights(concerts),
           top_venues: buildTopVenues(concerts, 10),
@@ -115,6 +119,15 @@ export default {
         }
 
         const schema = await getConcertSchema(env);
+
+        if (!schema.hasNotesColumn) {
+          return json({
+            ok: false,
+            error: "Notes not supported in current concerts schema",
+            event_key: eventKey,
+            schema_mode: schema.mode,
+          }, 400);
+        }
 
         const existing = await env.ARCHIVE_DB
           .prepare(buildFindConcertForNoteQuery(schema))
@@ -361,6 +374,11 @@ function titleCaseCity(value) {
   return titleCaseWords(value);
 }
 
+function schemaHasColumn(columns, name) {
+  const set = new Set((columns || []).map((c) => String(c?.name || "")));
+  return set.has(name);
+}
+
 function detectSchemaMode(columns) {
   const names = new Set((columns || []).map((c) => String(c?.name || "")));
 
@@ -387,7 +405,11 @@ async function getConcertSchema(env) {
     throw new Error("Unsupported concerts schema");
   }
 
-  return { mode, columns };
+  return {
+    mode,
+    columns,
+    hasNotesColumn: schemaHasColumn(columns, "notes"),
+  };
 }
 function buildConcertsQuery(schema, withLimit) {
   if (schema.mode === "new") {
@@ -405,7 +427,7 @@ function buildConcertsQuery(schema, withLimit) {
         url,
         image_url,
         genre_hint,
-        notes,
+        ${schema.hasNotesColumn ? "notes" : "'' AS notes"},
         source,
         source_id,
         updated_at
@@ -455,7 +477,7 @@ function buildSingleConcertQuery(schema) {
         url,
         image_url,
         genre_hint,
-        notes,
+        ${schema.hasNotesColumn ? "notes" : "'' AS notes"},
         source,
         source_id,
         updated_at
@@ -484,8 +506,8 @@ function buildSingleConcertQuery(schema) {
       event_key,
       updated_at
     FROM concerts
-    WHERE id = ?
-    LIMIT 1
+      WHERE id = ?
+      LIMIT 1
   `;
 }
 
@@ -523,7 +545,7 @@ function buildFindConcertByEventKeyQuery(schema) {
         url,
         image_url,
         genre_hint,
-        notes,
+        ${schema.hasNotesColumn ? "notes" : "'' AS notes"},
         source,
         source_id,
         updated_at
@@ -608,7 +630,7 @@ function mapConcertRowToApi(row, schema) {
       region: null,
       country,
       festival: isFestival ? 1 : 0,
-      notes: asText(row.notes),
+      notes: schema.hasNotesColumn ? asText(row.notes) : "",
       rating: null,
       event_key: asText(row.source_id || row.id),
       updated_at: row.updated_at,
