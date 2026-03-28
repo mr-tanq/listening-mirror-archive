@@ -15,7 +15,7 @@ export default {
       return json({
         ok: true,
         worker: "listening-mirror-archive",
-        build_marker: "ARCHIVE_CONCERTS_V3_BACKFILL",
+        build_marker: "ARCHIVE_CONCERTS_V4_SMART_MATCHER",
         time: new Date().toISOString(),
       });
     }
@@ -411,7 +411,6 @@ export default {
         return json({ ok: false, error: String(err) }, 500);
       }
     }
-
     if (url.pathname === "/setlists-backfill" && request.method === "GET") {
       try {
         const providedKey = String(url.searchParams.get("key") || "").trim();
@@ -792,7 +791,6 @@ async function refreshConcertSetlist(env, eventKey, { debug = false, force = fal
       : undefined,
   };
 }
-
 async function findSetlistForConcert(concert, apiKey, { debug = false } = {}) {
   const artist = asText(concert?.main_artist);
   const dateIso = asText(concert?.date);
@@ -987,7 +985,7 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
   for (let i = 0; i < allSongs.length; i += 1) {
     const song = allSongs[i];
     const nextSong = i < allSongs.length - 1 ? allSongs[i + 1] : "";
-    const result = await lookupBestLastfmDuration(lastfmApiKey, artistName, song, nextSong).catch(() => null);
+    const result = await lookupBestLastfmDuration(lastfmApiKey, artistName, song, nextSong, debug).catch(() => null);
 
     if (result && Number.isFinite(result.duration_ms) && result.duration_ms > 0) {
       totalMs += result.duration_ms;
@@ -1000,8 +998,10 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
         matched: !!(result && Number.isFinite(result.duration_ms) && result.duration_ms > 0),
         duration_ms: result?.duration_ms ?? null,
         variant_used: result?.variant_used || null,
+        method: result?.method || null,
         returned_track: result?.track_name || null,
         returned_artist: result?.artist_name || null,
+        score: result?.score ?? null,
       });
     }
   }
@@ -1024,13 +1024,27 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
   };
 }
 
-async function lookupBestLastfmDuration(apiKey, artistName, songTitle, nextSong = "") {
+async function lookupBestLastfmDuration(apiKey, artistName, songTitle, nextSong = "", debug = false) {
   const variants = buildTrackLookupVariants(songTitle, nextSong);
 
   for (const variant of variants) {
-    const result = await lookupLastfmTrackDurationMs(apiKey, artistName, variant).catch(() => null);
-    if (result && Number.isFinite(result.duration_ms) && result.duration_ms > 0) {
-      return { ...result, variant_used: variant };
+    const exact = await lookupLastfmTrackDurationMs(apiKey, artistName, variant).catch(() => null);
+    if (exact && Number.isFinite(exact.duration_ms) && exact.duration_ms > 0) {
+      return {
+        ...exact,
+        variant_used: variant,
+        method: "track.getInfo",
+        score: 100,
+      };
+    }
+
+    const searched = await searchLastfmTrackDurationMs(apiKey, artistName, variant, debug).catch(() => null);
+    if (searched && Number.isFinite(searched.duration_ms) && searched.duration_ms > 0) {
+      return {
+        ...searched,
+        variant_used: variant,
+        method: "track.search",
+      };
     }
   }
 
@@ -1058,11 +1072,20 @@ function buildTrackLookupVariants(songTitle, nextSong = "") {
     .replace(/\s*\.\.\.$|\s*\u2026$/g, "")
     .trim();
 
+  const noPunct = cleaned.replace(/[.:;!?'"`()[\]{}]/g, " ").replace(/\s+/g, " ").trim();
+  const noDash = cleaned.replace(/[–—-]/g, " ").replace(/\s+/g, " ").trim();
+  const noSlash = cleaned.replace(/[\\/]/g, " ").replace(/\s+/g, " ").trim();
+  const noFeat = cleaned.replace(/\b(feat|ft)\.?\b.*$/i, "").trim();
+  const noLive = cleaned.replace(/\b(live|edit|version|remaster(ed)?)\b/gi, " ").replace(/\s+/g, " ").trim();
+
   add(original);
   add(cleaned);
   add(stripped);
-  add(cleaned.replace(/[.:;!?'"`()[\]{}]/g, " ").replace(/\s+/g, " ").trim());
-  add(cleaned.replace(/[–—-]/g, " ").replace(/\s+/g, " ").trim());
+  add(noPunct);
+  add(noDash);
+  add(noSlash);
+  add(noFeat);
+  add(noLive);
 
   if ((original.endsWith("…") || original.endsWith("...")) && next) {
     const merged = `${original.replace(/[.…]+\s*$/, "").trim()} ${next.replace(/^\s*[.…]+\s*/, "").trim()}`.trim();
@@ -1075,8 +1098,7 @@ function buildTrackLookupVariants(songTitle, nextSong = "") {
   }
 
   return variants.filter(Boolean);
-}
-
+       }
 function normalizeFancyPunctuation(value) {
   return String(value || "")
     .replace(/\u2026/g, "...")
@@ -1111,6 +1133,115 @@ async function lookupLastfmTrackDurationMs(apiKey, artistName, songTitle) {
     track_name: asText(j?.track?.name),
     artist_name: asText(j?.track?.artist?.name || j?.track?.artist),
   };
+}
+
+async function searchLastfmTrackDurationMs(apiKey, artistName, songTitle, debug = false) {
+  const artist = asText(artistName);
+  const track = asText(songTitle);
+  if (!artist || !track || !apiKey) return null;
+
+  const u = new URL("https://ws.audioscrobbler.com/2.0/");
+  u.searchParams.set("method", "track.search");
+  u.searchParams.set("api_key", apiKey);
+  u.searchParams.set("track", track);
+  u.searchParams.set("limit", "10");
+  u.searchParams.set("format", "json");
+
+  const r = await fetch(u.toString(), { method: "GET" });
+  if (!r.ok) return null;
+
+  const j = await r.json().catch(() => ({}));
+  const rawMatches = j?.results?.trackmatches?.track;
+  const matches = Array.isArray(rawMatches) ? rawMatches : (rawMatches ? [rawMatches] : []);
+  if (!matches.length) return null;
+
+  let best = null;
+  let bestScore = -1;
+
+  for (const item of matches) {
+    const candidateTrack = asText(item?.name);
+    const candidateArtist = asText(item?.artist);
+    const score = scoreLastfmTrackCandidate(artist, track, candidateArtist, candidateTrack);
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = item;
+    }
+  }
+
+  if (!best || bestScore < 78) {
+    return null;
+  }
+
+  const dur = Number(best?.duration);
+  return {
+    duration_ms: Number.isFinite(dur) && dur > 0 ? dur : null,
+    track_name: asText(best?.name),
+    artist_name: asText(best?.artist),
+    score: bestScore,
+    search_debug: debug
+      ? matches.slice(0, 5).map((x) => ({
+          track: asText(x?.name),
+          artist: asText(x?.artist),
+          duration: Number(x?.duration || 0) || null,
+          score: scoreLastfmTrackCandidate(artist, track, asText(x?.artist), asText(x?.name)),
+        }))
+      : undefined,
+  };
+}
+
+function scoreLastfmTrackCandidate(targetArtist, targetTrack, candidateArtist, candidateTrack) {
+  const a1 = normalizeLoose(targetArtist);
+  const a2 = normalizeLoose(candidateArtist);
+  const t1 = normalizeTrackTitleForCompare(targetTrack);
+  const t2 = normalizeTrackTitleForCompare(candidateTrack);
+
+  let score = 0;
+
+  if (a1 && a2) {
+    if (a1 === a2) score += 40;
+    else if (a1.includes(a2) || a2.includes(a1)) score += 28;
+  }
+
+  if (t1 && t2) {
+    if (t1 === t2) score += 60;
+    else if (t1.includes(t2) || t2.includes(t1)) score += 42;
+    else {
+      const overlap = tokenOverlapScore(t1, t2);
+      score += Math.round(overlap * 35);
+    }
+  }
+
+  return score;
+}
+
+function tokenOverlapScore(a, b) {
+  const aSet = new Set(String(a).split(" ").filter(Boolean));
+  const bSet = new Set(String(b).split(" ").filter(Boolean));
+  if (!aSet.size || !bSet.size) return 0;
+
+  let same = 0;
+  for (const token of aSet) {
+    if (bSet.has(token)) same += 1;
+  }
+
+  return same / Math.max(aSet.size, bSet.size);
+}
+
+function normalizeTrackTitleForCompare(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\b(feat|ft)\.?\b.*$/i, " ")
+    .replace(/\b(live|remaster(ed)?|edit|version|instrumental|mono|stereo)\b/gi, " ")
+    .replace(/[“”‘’]/g, "")
+    .replace(/[(){}[\]]/g, " ")
+    .replace(/[\\/|]/g, " ")
+    .replace(/[–—-]/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeLoose(value) {
@@ -1226,4 +1357,4 @@ function buildMostActiveYear(concerts) {
   return [...counts.entries()]
     .map(([year, total]) => ({ year, total }))
     .sort((a, b) => b.total - a.total || b.year.localeCompare(a.year))[0] || null;
-                       }
+    }
