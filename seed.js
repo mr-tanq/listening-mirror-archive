@@ -1,5 +1,26 @@
 export default [
   {
+  "event_key": "2026-03-27-acu-birthday-party-acu-utrecht",
+  "kind": "festival",
+  "title": "ACU Birthday Party",
+  "status": "attended",
+  "start_date": "2026-03-27",
+  "end_date": "2026-03-27",
+  "venue": {
+    "raw_name": "ACU",
+    "family_name": "ACU"
+  },
+  "city": "Utrecht",
+  "region": null,
+  "country": "Netherlands",
+  "festival_name": "ACU Birthday Party",
+  "artists": [
+    { "name": "Throwing Bricks", "role": "festival", "sort_order": 1 },
+    { "name": "Ontaard", "role": "festival", "sort_order": 2 },
+    { "name": "Ruïna Neida", "role": "festival", "sort_order": 3 }
+  ]
+  },
+  {
     "event_key": "2026-03-19-villagers-of-ioannina-city-013-tilburg",
     "kind": "normal",
     "title": "Villagers of Ioannina City",
