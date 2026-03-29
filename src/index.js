@@ -1029,8 +1029,7 @@ async function setlistFmSearchSetlists(apiKey, params) {
   return [];
 }
 
-function scoreSetlistCandidate(concert, item, { role = "support", isFestival = false } = {}) {
-  const concertArtist = normalizeLoose(itemSafeArtist(concert?.main_artist));
+function scoreSetlistCandidate(concert, item, { role = "support", isFestival = false, targetArtist = "" } = {}) {  const concertArtist = normalizeLoose(itemSafeArtist(concert?.main_artist));
   const expectedDate = asText(concert?.date);
   const concertDateFm = isoDateToSetlistFmDate(expectedDate);
   const concertCity = normalizeLoose(concert?.city);
