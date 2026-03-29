@@ -913,7 +913,11 @@ async function findSetlistForArtistAtConcert(concert, artistEntry, apiKey, { deb
     const scored = [];
 
     for (const item of results.slice(0, 25)) {
-      const evalResult = scoreSetlistCandidate(concert, item, { role, isFestival });
+const evalResult = scoreSetlistCandidate(concert, item, {
+  role,
+  isFestival,
+  targetArtist: artist
+});    
       const score = evalResult.score;
 
       scored.push({
