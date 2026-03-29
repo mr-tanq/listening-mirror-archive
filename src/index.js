@@ -709,9 +709,10 @@ async function upsertSetlist(env, input) {
     .bind(eventKey, source, sourceUrl, setlistJson, now, now)
     .run();
 
-  const inserted = await getStoredSetlist(env, eventKey);
-  return mapSetlistRow(inserted);
+    const inserted = await getStoredSetlist(env, eventKey);
+    return mapSetlistRow(inserted);
 }
+
 async function refreshConcertSetlist(env, eventKey, { debug = false, force = false } = {}) {
   const setlistApiKey = String(env.SETLISTFM_API_KEY || "").trim();
   if (!setlistApiKey) {
@@ -919,7 +920,7 @@ async function findSetlistForArtistAtConcert(concert, artistEntry, apiKey, { deb
       const evalResult = scoreSetlistCandidate(concert, item, {
         role,
         isFestival,
-        targetArtist: artist
+        targetArtist: artist,
       });
 
       const score = evalResult.score;
@@ -1204,6 +1205,7 @@ function normalizeSetlistFmItem(item) {
 
   return { sets };
 }
+
 async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApiKey, debug = false) {
   const sets = Array.isArray(setlist?.sets) ? setlist.sets : [];
   const allSongs = sets.flatMap((s) => Array.isArray(s?.songs) ? s.songs : []).filter(Boolean);
@@ -1602,4 +1604,4 @@ function buildMostActiveYear(concerts) {
   return [...counts.entries()]
     .map(([year, total]) => ({ year, total }))
     .sort((a, b) => b.total - a.total || b.year.localeCompare(a.year))[0] || null;
-}
+        }
