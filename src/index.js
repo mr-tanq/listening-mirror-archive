@@ -15,7 +15,7 @@ export default {
       return json({
         ok: true,
         worker: "listening-mirror-archive",
-        build_marker: "ARCHIVE_CONCERTS_V5_MULTI_ARTIST_SETLISTS",
+        build_marker: "ARCHIVE_CONCERTS_V5_FESTIVAL_MATCHING",
         time: new Date().toISOString(),
       });
     }
@@ -34,26 +34,17 @@ export default {
         const expectedKey = String(env.SEED_IMPORT_KEY || "").trim();
 
         if (!expectedKey) {
-          return json({
-            ok: false,
-            error: "Missing SEED_IMPORT_KEY",
-          }, 500);
+          return json({ ok: false, error: "Missing SEED_IMPORT_KEY" }, 500);
         }
 
         if (!providedKey || providedKey !== expectedKey) {
-          return json({
-            ok: false,
-            error: "Unauthorized",
-          }, 401);
+          return json({ ok: false, error: "Unauthorized" }, 401);
         }
 
         const result = await seedArchiveToDb(env);
         return json(result, result.ok ? 200 : 207);
       } catch (err) {
-        return json({
-          ok: false,
-          error: String(err),
-        }, 500);
+        return json({ ok: false, error: String(err) }, 500);
       }
     }
 
@@ -348,6 +339,7 @@ export default {
         return json({ ok: false, error: String(err) }, 500);
       }
     }
+
     if (url.pathname === "/concert-setlist-refresh" && request.method === "POST") {
       try {
         const body = await request.json().catch(() => null);
@@ -434,7 +426,8 @@ export default {
               main_artist,
               supports,
               venue,
-              city
+              city,
+              festival
             FROM archive_concerts
             ORDER BY date DESC, id DESC
             LIMIT ? OFFSET ?
@@ -467,6 +460,7 @@ export default {
                 date: asText(row?.date),
                 city: asText(row?.city),
                 venue: asText(row?.venue),
+                festival: Number(row?.festival || 0),
               });
             } else {
               failed += 1;
@@ -479,6 +473,7 @@ export default {
                 date: asText(row?.date),
                 city: asText(row?.city),
                 venue: asText(row?.venue),
+                festival: Number(row?.festival || 0),
               });
             }
           } catch (err) {
@@ -492,6 +487,7 @@ export default {
               date: asText(row?.date),
               city: asText(row?.city),
               venue: asText(row?.venue),
+              festival: Number(row?.festival || 0),
             });
           }
         }
@@ -651,13 +647,14 @@ function mapSetlistRow(row) {
     updated_at: row.updated_at ?? null,
   };
 }
+
 function hasEstimatedDurationFields(savedRow) {
   if (!savedRow) return false;
 
   try {
     const parsed = JSON.parse(String(savedRow.setlist_json || "{}"));
 
-    if (Array.isArray(parsed?.artist_setlists)) {
+    if (parsed?.kind === "multi_artist" && Array.isArray(parsed?.artist_setlists)) {
       return parsed.artist_setlists.every((x) =>
         Object.prototype.hasOwnProperty.call(x || {}, "estimated_duration_sec") &&
         Object.prototype.hasOwnProperty.call(x || {}, "matched_tracks") &&
@@ -666,9 +663,9 @@ function hasEstimatedDurationFields(savedRow) {
     }
 
     return (
-      Object.prototype.hasOwnProperty.call(parsed || {}, "estimated_duration_sec") &&
-      Object.prototype.hasOwnProperty.call(parsed || {}, "matched_tracks") &&
-      Object.prototype.hasOwnProperty.call(parsed || {}, "total_tracks")
+      Object.prototype.hasOwnProperty.call(parsed, "estimated_duration_sec") &&
+      Object.prototype.hasOwnProperty.call(parsed, "matched_tracks") &&
+      Object.prototype.hasOwnProperty.call(parsed, "total_tracks")
     );
   } catch {
     return false;
@@ -714,39 +711,6 @@ async function upsertSetlist(env, input) {
 
   const inserted = await getStoredSetlist(env, eventKey);
   return mapSetlistRow(inserted);
-}
-
-function buildEventArtistList(concert) {
-  const mainArtist = asText(concert?.main_artist);
-  const supports = splitArtists(concert?.supports);
-
-  const out = [];
-  const seen = new Set();
-
-  function pushArtist(name, role) {
-    const clean = asText(name);
-    if (!clean) return;
-    const key = clean.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ artist: clean, role });
-  }
-
-  if (mainArtist) pushArtist(mainArtist, "main");
-
-  for (const support of supports) {
-    pushArtist(support, Number(concert?.festival || 0) === 1 ? "festival" : "support");
-  }
-
-  return out;
-}
-
-function buildSetlistSourceSummary(artistSetlists) {
-  const firstWithUrl = (artistSetlists || []).find((x) => asText(x?.source_url));
-  return {
-    source: "setlistfm",
-    source_url: asText(firstWithUrl?.source_url),
-  };
 }
 
 async function refreshConcertSetlist(env, eventKey, { debug = false, force = false } = {}) {
@@ -800,38 +764,19 @@ async function refreshConcertSetlist(env, eventKey, { debug = false, force = fal
   }
 
   const concert = mapArchiveConcertRow(concertRow);
-  const eventArtists = buildEventArtistList(concert);
 
-  if (!eventArtists.length) {
-    return {
-      ok: false,
-      error: "No artists available for event",
-      status: 404,
-    };
-  }
-
+  const artistsToResolve = buildArtistsForConcert(concert);
+  const artistResults = [];
   const artistSetlists = [];
-  const debugArtists = [];
 
-  for (const entry of eventArtists) {
-    const fetched = await findSetlistForArtistAtEvent(
-      {
-        artist: entry.artist,
-        role: entry.role,
-        date: concert.date,
-        city: concert.city,
-        venue: concert.venue,
-        event_title: concert.title,
-      },
-      setlistApiKey,
-      { debug }
-    );
+  for (const artistEntry of artistsToResolve) {
+    const fetched = await findSetlistForArtistAtConcert(concert, artistEntry, setlistApiKey, { debug });
 
     if (!fetched?.ok || !fetched?.setlist) {
       if (debug) {
-        debugArtists.push({
-          artist: entry.artist,
-          role: entry.role,
+        artistResults.push({
+          artist: artistEntry.artist,
+          role: artistEntry.role,
           ok: false,
           debug: fetched?.debug || null,
         });
@@ -841,26 +786,26 @@ async function refreshConcertSetlist(env, eventKey, { debug = false, force = fal
 
     const enriched = await enrichSetlistWithEstimatedDuration(
       fetched.setlist,
-      entry.artist,
+      artistEntry.artist,
       String(env.LASTFM_API_KEY || "").trim(),
       debug
     );
 
     artistSetlists.push({
-      artist: entry.artist,
-      role: entry.role,
+      artist: artistEntry.artist,
+      role: artistEntry.role,
       source: fetched.source || "setlistfm",
       source_url: fetched.source_url || "",
-      sets: enriched.setlist?.sets || [],
-      estimated_duration_sec: enriched.setlist?.estimated_duration_sec ?? null,
-      matched_tracks: enriched.setlist?.matched_tracks ?? 0,
-      total_tracks: enriched.setlist?.total_tracks ?? 0,
+      sets: enriched.setlist.sets || [],
+      estimated_duration_sec: enriched.setlist.estimated_duration_sec ?? null,
+      matched_tracks: enriched.setlist.matched_tracks ?? 0,
+      total_tracks: enriched.setlist.total_tracks ?? 0,
     });
 
     if (debug) {
-      debugArtists.push({
-        artist: entry.artist,
-        role: entry.role,
+      artistResults.push({
+        artist: artistEntry.artist,
+        role: artistEntry.role,
         ok: true,
         fetch_debug: fetched?.debug || null,
         duration_debug: enriched?.debug || null,
@@ -871,41 +816,71 @@ async function refreshConcertSetlist(env, eventKey, { debug = false, force = fal
   if (!artistSetlists.length) {
     return {
       ok: false,
-      error: "No matching setlists found",
+      error: "No matching setlist found",
       status: 404,
-      debug: debug ? { artists: debugArtists } : undefined,
+      debug: debug ? { artists: artistResults } : undefined,
     };
   }
 
-  const sourceSummary = buildSetlistSourceSummary(artistSetlists);
+  const primary = artistSetlists[0] || null;
+  const multiSetlist = {
+    kind: "multi_artist",
+    event_title: concert.title || concert.main_artist,
+    date: concert.date,
+    venue: concert.venue,
+    city: concert.city,
+    festival: Number(concert.festival || 0),
+    artist_setlists: artistSetlists,
+    estimated_duration_sec: artistSetlists.reduce((sum, x) => sum + Number(x.estimated_duration_sec || 0), 0) || null,
+    matched_tracks: artistSetlists.reduce((sum, x) => sum + Number(x.matched_tracks || 0), 0),
+    total_tracks: artistSetlists.reduce((sum, x) => sum + Number(x.total_tracks || 0), 0),
+    source_url: primary?.source_url || "",
+  };
 
   const saved = await upsertSetlist(env, {
     event_key: eventKey,
-    source: sourceSummary.source,
-    source_url: sourceSummary.source_url,
-    setlist: {
-      kind: "multi_artist",
-      event_title: concert.title,
-      date: concert.date,
-      venue: concert.venue,
-      city: concert.city,
-      festival: Number(concert.festival || 0),
-      artist_setlists: artistSetlists,
-    },
+    source: "setlistfm",
+    source_url: primary?.source_url || "",
+    setlist: multiSetlist,
   });
 
   return {
     ok: true,
     item: saved,
-    debug: debug ? { artists: debugArtists } : undefined,
+    debug: debug ? { artists: artistResults } : undefined,
   };
 }
 
-async function findSetlistForArtistAtEvent(eventArtist, apiKey, { debug = false } = {}) {
-  const artist = asText(eventArtist?.artist);
-  const dateIso = asText(eventArtist?.date);
-  const city = asText(eventArtist?.city);
-  const venue = asText(eventArtist?.venue);
+function buildArtistsForConcert(concert) {
+  const out = [];
+  const seen = new Set();
+
+  function add(artist, role) {
+    const a = asText(artist);
+    if (!a) return;
+    const key = a.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ artist: a, role });
+  }
+
+  add(concert.main_artist, "main");
+
+  const supports = splitArtists(concert.supports);
+  for (const s of supports) {
+    add(s, Number(concert.festival || 0) === 1 ? "festival" : "support");
+  }
+
+  return out;
+}
+
+async function findSetlistForArtistAtConcert(concert, artistEntry, apiKey, { debug = false } = {}) {
+  const artist = asText(artistEntry?.artist);
+  const role = asText(artistEntry?.role) || "support";
+  const dateIso = asText(concert?.date);
+  const city = asText(concert?.city);
+  const venue = asText(concert?.venue);
+  const isFestival = Number(concert?.festival || 0) === 1;
 
   if (!artist || !dateIso) {
     return {
@@ -937,8 +912,9 @@ async function findSetlistForArtistAtEvent(eventArtist, apiKey, { debug = false 
     const results = await setlistFmSearchSetlists(apiKey, params).catch(() => []);
     const scored = [];
 
-    for (const item of results.slice(0, 20)) {
-      const score = scoreArtistSetlistCandidate(eventArtist, item);
+    for (const item of results.slice(0, 25)) {
+      const evalResult = scoreSetlistCandidate(concert, item, { role, isFestival });
+      const score = evalResult.score;
 
       scored.push({
         id: asText(item?.id),
@@ -947,8 +923,12 @@ async function findSetlistForArtistAtEvent(eventArtist, apiKey, { debug = false 
         venue: asText(item?.venue?.name),
         city: asText(item?.venue?.city?.name),
         score,
+        rejected: !!evalResult.rejected,
+        rejection_reason: evalResult.rejection_reason || null,
         url: asText(item?.url),
       });
+
+      if (evalResult.rejected) continue;
 
       if (score > bestScore) {
         bestScore = score;
@@ -965,14 +945,22 @@ async function findSetlistForArtistAtEvent(eventArtist, apiKey, { debug = false 
       });
     }
 
-    if (bestScore >= 92) break;
+    if (!isFestival && bestScore >= 92) break;
+    if (isFestival && bestScore >= 88) break;
   }
 
-  if (!best || bestScore < 75) {
+  const minScore = isFestival ? 82 : 75;
+
+  if (!best || bestScore < minScore) {
     return {
       ok: false,
       debug: debug
-        ? { reason: "no_candidate_above_threshold", bestScore, attempts: debugAttempts }
+        ? {
+            reason: "no_candidate_above_threshold",
+            bestScore,
+            minScore,
+            attempts: debugAttempts,
+          }
         : undefined,
     };
   }
@@ -982,7 +970,11 @@ async function findSetlistForArtistAtEvent(eventArtist, apiKey, { debug = false 
     return {
       ok: false,
       debug: debug
-        ? { reason: "best_candidate_has_no_parsed_sets", bestScore, attempts: debugAttempts }
+        ? {
+            reason: "best_candidate_has_no_parsed_sets",
+            bestScore,
+            attempts: debugAttempts,
+          }
         : undefined,
     };
   }
@@ -998,9 +990,16 @@ async function findSetlistForArtistAtEvent(eventArtist, apiKey, { debug = false 
       city,
       sets: normalized.sets,
     },
-    debug: debug ? { bestScore, bestUrl: asText(best?.url), attempts: debugAttempts } : undefined,
+    debug: debug
+      ? {
+          bestScore,
+          bestUrl: asText(best?.url),
+          attempts: debugAttempts,
+        }
+      : undefined,
   };
 }
+
 async function setlistFmSearchSetlists(apiKey, params) {
   const u = new URL("https://api.setlist.fm/rest/1.0/search/setlists");
   for (const [k, v] of Object.entries(params || {})) {
@@ -1026,37 +1025,116 @@ async function setlistFmSearchSetlists(apiKey, params) {
   return [];
 }
 
-function scoreArtistSetlistCandidate(eventArtist, item) {
-  const targetArtist = normalizeLoose(eventArtist?.artist);
-  const targetDate = isoDateToSetlistFmDate(eventArtist?.date);
-  const targetCity = normalizeLoose(eventArtist?.city);
-  const targetVenue = normalizeLoose(eventArtist?.venue);
+function scoreSetlistCandidate(concert, item, { role = "support", isFestival = false } = {}) {
+  const concertArtist = normalizeLoose(itemSafeArtist(concert?.main_artist));
+  const expectedDate = asText(concert?.date);
+  const concertDateFm = isoDateToSetlistFmDate(expectedDate);
+  const concertCity = normalizeLoose(concert?.city);
+  const concertVenue = normalizeLoose(concert?.venue);
+  const concertCountry = normalizeLoose(concert?.country);
 
   const itemArtist = normalizeLoose(item?.artist?.name);
-  const itemDate = asText(item?.eventDate);
+  const itemDateFm = asText(item?.eventDate);
   const itemCity = normalizeLoose(item?.venue?.city?.name);
   const itemVenue = normalizeLoose(item?.venue?.name);
+  const itemCountry = normalizeLoose(item?.venue?.city?.country?.name || item?.venue?.city?.country?.code);
 
   let score = 0;
 
-  if (targetArtist && itemArtist) {
-    if (targetArtist === itemArtist) score += 45;
-    else if (targetArtist.includes(itemArtist) || itemArtist.includes(targetArtist)) score += 30;
+  if (concertArtist && itemArtist) {
+    if (concertArtist === itemArtist) score += 45;
+    else if (concertArtist.includes(itemArtist) || itemArtist.includes(concertArtist)) score += 28;
   }
 
-  if (targetDate && itemDate && targetDate === itemDate) score += 35;
+  const dayDiff = dateDiffFromSetlistFm(itemDateFm, concertDateFm);
 
-  if (targetCity && itemCity) {
-    if (targetCity === itemCity) score += 12;
-    else if (targetCity.includes(itemCity) || itemCity.includes(targetCity)) score += 6;
+  if (dayDiff === 0) score += 35;
+  else if (isFestival && dayDiff === 1) score += 18;
+  else if (isFestival && dayDiff === 2) score += 8;
+  else if (!isFestival && dayDiff === 1) score += 4;
+
+  if (concertCity && itemCity) {
+    if (concertCity === itemCity) score += 22;
+    else if (concertCity.includes(itemCity) || itemCity.includes(concertCity)) score += 10;
   }
 
-  if (targetVenue && itemVenue) {
-    if (targetVenue === itemVenue) score += 18;
-    else if (targetVenue.includes(itemVenue) || itemVenue.includes(targetVenue)) score += 10;
+  if (concertVenue && itemVenue) {
+    if (concertVenue === itemVenue) score += 18;
+    else if (concertVenue.includes(itemVenue) || itemVenue.includes(concertVenue)) score += 10;
+    else if (isFestival && isStageLikeVenue(itemVenue)) score += 6;
   }
 
-  return score;
+  if (concertCountry && itemCountry) {
+    if (concertCountry === itemCountry) score += 8;
+  }
+
+  if (role === "main") score += 2;
+  if (role === "festival") score -= 2;
+
+  if (isFestival) {
+    const wrongCountry = concertCountry && itemCountry && concertCountry !== itemCountry;
+    const wrongCitySameDay = dayDiff === 0 && concertCity && itemCity && concertCity !== itemCity;
+    const noLocalSignal =
+      !(concertCity && itemCity && concertCity === itemCity) &&
+      !(concertVenue && itemVenue && (concertVenue === itemVenue || concertVenue.includes(itemVenue) || itemVenue.includes(concertVenue))) &&
+      !isStageLikeVenue(itemVenue);
+
+    if (wrongCountry && dayDiff <= 1 && noLocalSignal) {
+      return {
+        score: -1,
+        rejected: true,
+        rejection_reason: "festival_wrong_country_no_local_signal",
+      };
+    }
+
+    if (wrongCitySameDay && noLocalSignal) {
+      return {
+        score: -1,
+        rejected: true,
+        rejection_reason: "festival_same_day_wrong_city_no_local_signal",
+      };
+    }
+
+    if (dayDiff > 2) {
+      return {
+        score: -1,
+        rejected: true,
+        rejection_reason: "festival_too_far_in_date",
+      };
+    }
+  }
+
+  return { score, rejected: false, rejection_reason: null };
+}
+
+function itemSafeArtist(value) {
+  return String(value || "");
+}
+
+function isStageLikeVenue(value) {
+  const v = normalizeLoose(value);
+  if (!v) return false;
+  return (
+    v.includes("stage") ||
+    v.includes("main stage") ||
+    v.includes("tent") ||
+    v.includes("arena") ||
+    v.includes("festival") ||
+    v.includes("open air")
+  );
+}
+
+function parseSetlistFmDate(value) {
+  const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(String(value || "").trim());
+  if (!m) return null;
+  return Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+}
+
+function dateDiffFromSetlistFm(a, b) {
+  const da = parseSetlistFmDate(a);
+  const db = parseSetlistFmDate(b);
+  if (da == null || db == null) return 999;
+  return Math.abs(Math.round((da - db) / 86400000));
 }
 
 function normalizeSetlistFmItem(item) {
@@ -1104,7 +1182,7 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
   for (let i = 0; i < allSongs.length; i += 1) {
     const song = allSongs[i];
     const nextSong = i < allSongs.length - 1 ? allSongs[i + 1] : "";
-    const result = await lookupBestLastfmDuration(lastfmApiKey, artistName, song, nextSong).catch(() => null);
+    const result = await lookupBestLastfmDuration(lastfmApiKey, artistName, song, nextSong, debug).catch(() => null);
 
     if (result && Number.isFinite(result.duration_ms) && result.duration_ms > 0) {
       totalMs += result.duration_ms;
@@ -1143,7 +1221,7 @@ async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApi
   };
 }
 
-async function lookupBestLastfmDuration(apiKey, artistName, songTitle, nextSong = "") {
+async function lookupBestLastfmDuration(apiKey, artistName, songTitle, nextSong = "", debug = false) {
   const variants = buildTrackLookupVariants(songTitle, nextSong);
 
   for (const variant of variants) {
@@ -1157,7 +1235,7 @@ async function lookupBestLastfmDuration(apiKey, artistName, songTitle, nextSong 
       };
     }
 
-    const searched = await searchLastfmTrackDurationMs(apiKey, artistName, variant).catch(() => null);
+    const searched = await searchLastfmTrackDurationMs(apiKey, artistName, variant, debug).catch(() => null);
     if (searched && Number.isFinite(searched.duration_ms) && searched.duration_ms > 0) {
       return {
         ...searched,
@@ -1255,7 +1333,7 @@ async function lookupLastfmTrackDurationMs(apiKey, artistName, songTitle) {
   };
 }
 
-async function searchLastfmTrackDurationMs(apiKey, artistName, songTitle) {
+async function searchLastfmTrackDurationMs(apiKey, artistName, songTitle, debug = false) {
   const artist = asText(artistName);
   const track = asText(songTitle);
   if (!artist || !track || !apiKey) return null;
@@ -1299,6 +1377,14 @@ async function searchLastfmTrackDurationMs(apiKey, artistName, songTitle) {
     track_name: asText(best?.name),
     artist_name: asText(best?.artist),
     score: bestScore,
+    search_debug: debug
+      ? matches.slice(0, 5).map((x) => ({
+          track: asText(x?.name),
+          artist: asText(x?.artist),
+          duration: Number(x?.duration || 0) || null,
+          score: scoreLastfmTrackCandidate(artist, track, asText(x?.artist), asText(x?.name)),
+        }))
+      : undefined,
   };
 }
 
@@ -1318,7 +1404,10 @@ function scoreLastfmTrackCandidate(targetArtist, targetTrack, candidateArtist, c
   if (t1 && t2) {
     if (t1 === t2) score += 60;
     else if (t1.includes(t2) || t2.includes(t1)) score += 42;
-    else score += Math.round(tokenOverlapScore(t1, t2) * 35);
+    else {
+      const overlap = tokenOverlapScore(t1, t2);
+      score += Math.round(overlap * 35);
+    }
   }
 
   return score;
@@ -1466,4 +1555,4 @@ function buildMostActiveYear(concerts) {
   return [...counts.entries()]
     .map(([year, total]) => ({ year, total }))
     .sort((a, b) => b.total - a.total || b.year.localeCompare(a.year))[0] || null;
-}
+                                                }
