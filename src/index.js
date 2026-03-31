@@ -1,4 +1,11 @@
 import { seedArchiveToDb, getSeedPreview } from "./archive-seed.js";
+import {
+  addPlannedConcert,
+  listPlannedConcerts,
+  removePlannedConcert,
+  markPlannedConcertAttended,
+  markPlannedConcertMissed,
+} from "./planned-concerts.js";
 
 export default {
   async fetch(request, env) {
@@ -15,7 +22,7 @@ export default {
       return json({
         ok: true,
         worker: "listening-mirror-archive",
-        build_marker: "ARCHIVE_CONCERTS_V6_SETLIST_ID_HYDRATION",
+        build_marker: "ARCHIVE_CONCERTS_V7_PLANNED_CONCERTS_CONNECTED",
         time: new Date().toISOString(),
       });
     }
@@ -71,6 +78,19 @@ export default {
             .first();
         } catch {}
 
+        let plannedInfo = { results: [] };
+        let plannedCount = { total: 0 };
+
+        try {
+          plannedInfo = await env.ARCHIVE_DB
+            .prepare("PRAGMA table_info(planned_concerts)")
+            .all();
+
+          plannedCount = await env.ARCHIVE_DB
+            .prepare("SELECT COUNT(*) AS total FROM planned_concerts")
+            .first();
+        } catch {}
+
         return json({
           ok: true,
           binding: "ARCHIVE_DB",
@@ -78,9 +98,108 @@ export default {
           archive_total: archiveCount?.total ?? 0,
           setlists_columns: setlistsInfo.results || [],
           setlists_total: setlistsCount?.total ?? 0,
+          planned_columns: plannedInfo.results || [],
+          planned_total: plannedCount?.total ?? 0,
           has_setlistfm_api_key: !!String(env.SETLISTFM_API_KEY || "").trim(),
           has_lastfm_api_key: !!String(env.LASTFM_API_KEY || "").trim(),
           has_seed_import_key: !!String(env.SEED_IMPORT_KEY || "").trim(),
+        });
+      } catch (err) {
+        return json({ ok: false, error: String(err) }, 500);
+      }
+    }
+
+    if (url.pathname === "/planned-concerts" && request.method === "GET") {
+      try {
+        const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 500), 2000));
+        const includeArchived = asText(url.searchParams.get("includeArchived")) === "1";
+        const includeMissed = asText(url.searchParams.get("includeMissed")) === "1";
+        const includeDismissed = asText(url.searchParams.get("includeDismissed")) === "1";
+
+        const result = await listPlannedConcerts(env.ARCHIVE_DB, {
+          limit,
+          includeArchived,
+          includeMissed,
+          includeDismissed,
+        });
+
+        return json(result);
+      } catch (err) {
+        return json({ ok: false, error: String(err) }, 500);
+      }
+    }
+
+    if (url.pathname === "/planned-concerts/add" && request.method === "POST") {
+      try {
+        const body = await request.json().catch(() => null);
+        const item = await addPlannedConcert(env.ARCHIVE_DB, body || {});
+
+        return json({
+          ok: true,
+          item,
+        });
+      } catch (err) {
+        return json({ ok: false, error: String(err) }, 500);
+      }
+    }
+
+    if (url.pathname === "/planned-concerts/remove" && request.method === "POST") {
+      try {
+        const body = await request.json().catch(() => null);
+        const eventKey = asText(body?.event_key);
+
+        if (!eventKey) {
+          return json({ ok: false, error: "Missing event_key" }, 400);
+        }
+
+        const result = await removePlannedConcert(env.ARCHIVE_DB, eventKey);
+        return json(result);
+      } catch (err) {
+        return json({ ok: false, error: String(err) }, 500);
+      }
+    }
+
+    if (url.pathname === "/planned-concerts/missed" && request.method === "POST") {
+      try {
+        const body = await request.json().catch(() => null);
+        const eventKey = asText(body?.event_key);
+
+        if (!eventKey) {
+          return json({ ok: false, error: "Missing event_key" }, 400);
+        }
+
+        const item = await markPlannedConcertMissed(env.ARCHIVE_DB, eventKey);
+
+        return json({
+          ok: true,
+          item,
+        });
+      } catch (err) {
+        return json({ ok: false, error: String(err) }, 500);
+      }
+    }
+
+    if (url.pathname === "/planned-concerts/attended" && request.method === "POST") {
+      try {
+        const body = await request.json().catch(() => null);
+        const eventKey = asText(body?.event_key);
+
+        if (!eventKey) {
+          return json({ ok: false, error: "Missing event_key" }, 400);
+        }
+
+        const plannedItem = await markPlannedConcertAttended(env.ARCHIVE_DB, eventKey);
+
+        if (!plannedItem) {
+          return json({ ok: false, error: "Planned concert not found" }, 404);
+        }
+
+        const archiveItem = await upsertArchiveConcertFromPlanned(env, plannedItem);
+
+        return json({
+          ok: true,
+          planned_item: plannedItem,
+          archive_item: archiveItem,
         });
       } catch (err) {
         return json({ ok: false, error: String(err) }, 500);
@@ -254,7 +373,6 @@ export default {
         return json({ ok: false, error: String(err) }, 500);
       }
     }
-
     if (url.pathname === "/concert-setlist" && request.method === "GET") {
       try {
         const eventKey = asText(url.searchParams.get("event_key"));
@@ -607,6 +725,128 @@ function mapArchiveConcertRow(row) {
   };
 }
 
+async function upsertArchiveConcertFromPlanned(env, plannedItem) {
+  const eventKey = asText(plannedItem?.event_key);
+  if (!eventKey) {
+    throw new Error("Missing planned concert event_key");
+  }
+
+  const existing = await env.ARCHIVE_DB
+    .prepare(`
+      SELECT
+        id,
+        event_key,
+        date,
+        end_date,
+        title,
+        main_artist,
+        supports,
+        venue,
+        venue_family,
+        city,
+        region,
+        country,
+        festival,
+        notes,
+        rating,
+        url,
+        image_url,
+        genre_hint,
+        created_at,
+        updated_at
+      FROM archive_concerts
+      WHERE event_key = ?
+      LIMIT 1
+    `)
+    .bind(eventKey)
+    .first();
+
+  if (existing) {
+    return mapArchiveConcertRow(existing);
+  }
+
+  const nowTs = Date.now();
+
+  await env.ARCHIVE_DB
+    .prepare(`
+      INSERT INTO archive_concerts (
+        event_key,
+        date,
+        end_date,
+        title,
+        main_artist,
+        supports,
+        venue,
+        venue_family,
+        city,
+        region,
+        country,
+        festival,
+        notes,
+        rating,
+        url,
+        image_url,
+        genre_hint,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .bind(
+      eventKey,
+      asText(plannedItem?.date_local),
+      asText(plannedItem?.date_local),
+      asText(plannedItem?.title),
+      asText(plannedItem?.main_artist) || asText(plannedItem?.title),
+      "",
+      asText(plannedItem?.venue_name),
+      asText(plannedItem?.venue_name),
+      asText(plannedItem?.city).toLowerCase(),
+      null,
+      asText(plannedItem?.country) || "NL",
+      0,
+      asText(plannedItem?.notes),
+      null,
+      asText(plannedItem?.url),
+      asText(plannedItem?.image_url),
+      "",
+      nowTs,
+      nowTs
+    )
+    .run();
+
+  const inserted = await env.ARCHIVE_DB
+    .prepare(`
+      SELECT
+        id,
+        event_key,
+        date,
+        end_date,
+        title,
+        main_artist,
+        supports,
+        venue,
+        venue_family,
+        city,
+        region,
+        country,
+        festival,
+        notes,
+        rating,
+        url,
+        image_url,
+        genre_hint,
+        created_at,
+        updated_at
+      FROM archive_concerts
+      WHERE event_key = ?
+      LIMIT 1
+    `)
+    .bind(eventKey)
+    .first();
+
+  return mapArchiveConcertRow(inserted);
+}
+
 async function getStoredSetlist(env, eventKey) {
   return await env.ARCHIVE_DB
     .prepare(`
@@ -709,10 +949,9 @@ async function upsertSetlist(env, input) {
     .bind(eventKey, source, sourceUrl, setlistJson, now, now)
     .run();
 
-    const inserted = await getStoredSetlist(env, eventKey);
-    return mapSetlistRow(inserted);
-}
-
+  const inserted = await getStoredSetlist(env, eventKey);
+  return mapSetlistRow(inserted);
+          }
 async function refreshConcertSetlist(env, eventKey, { debug = false, force = false } = {}) {
   const setlistApiKey = String(env.SETLISTFM_API_KEY || "").trim();
   if (!setlistApiKey) {
@@ -1604,4 +1843,4 @@ function buildMostActiveYear(concerts) {
   return [...counts.entries()]
     .map(([year, total]) => ({ year, total }))
     .sort((a, b) => b.total - a.total || b.year.localeCompare(a.year))[0] || null;
-        }
+      }
