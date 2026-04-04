@@ -297,6 +297,50 @@ export default {
       }
     }
 
+    if (url.pathname === "/memory/on-this-day" && request.method === "GET") {
+      try {
+        const rows = await env.ARCHIVE_DB
+          .prepare(`
+            SELECT
+              id,
+              event_key,
+              date,
+              end_date,
+              title,
+              main_artist,
+              supports,
+              venue,
+              venue_family,
+              city,
+              region,
+              country,
+              festival,
+              notes,
+              rating,
+              url,
+              image_url,
+              genre_hint,
+              created_at,
+              updated_at
+            FROM archive_concerts
+            ORDER BY date DESC, id DESC
+          `)
+          .all();
+
+        const concerts = (rows.results || []).map(mapArchiveConcertRow);
+        const memory = buildOnThisDayMemory(concerts);
+
+        return json({
+          ok: true,
+          today: memory.today,
+          total: memory.items.length,
+          items: memory.items,
+        });
+      } catch (err) {
+        return json({ ok: false, error: String(err) }, 500);
+      }
+    }
+
     if (url.pathname === "/concert-note" && request.method === "POST") {
       try {
         const body = await request.json().catch(() => null);
@@ -373,6 +417,7 @@ export default {
         return json({ ok: false, error: String(err) }, 500);
       }
     }
+
     if (url.pathname === "/concert-setlist" && request.method === "GET") {
       try {
         const eventKey = asText(url.searchParams.get("event_key"));
@@ -457,7 +502,6 @@ export default {
         return json({ ok: false, error: String(err) }, 500);
       }
     }
-
     if (url.pathname === "/concert-setlist-refresh" && request.method === "POST") {
       try {
         const body = await request.json().catch(() => null);
@@ -951,7 +995,7 @@ async function upsertSetlist(env, input) {
 
   const inserted = await getStoredSetlist(env, eventKey);
   return mapSetlistRow(inserted);
-          }
+      }
 async function refreshConcertSetlist(env, eventKey, { debug = false, force = false } = {}) {
   const setlistApiKey = String(env.SETLISTFM_API_KEY || "").trim();
   if (!setlistApiKey) {
@@ -1444,7 +1488,6 @@ function normalizeSetlistFmItem(item) {
 
   return { sets };
 }
-
 async function enrichSetlistWithEstimatedDuration(setlist, artistName, lastfmApiKey, debug = false) {
   const sets = Array.isArray(setlist?.sets) ? setlist.sets : [];
   const allSongs = sets.flatMap((s) => Array.isArray(s?.songs) ? s.songs : []).filter(Boolean);
@@ -1843,4 +1886,41 @@ function buildMostActiveYear(concerts) {
   return [...counts.entries()]
     .map(([year, total]) => ({ year, total }))
     .sort((a, b) => b.total - a.total || b.year.localeCompare(a.year))[0] || null;
-      }
+}
+
+function buildOnThisDayMemory(concerts, today = new Date()) {
+  const utcMonth = today.getUTCMonth() + 1;
+  const utcDay = today.getUTCDate();
+  const utcYear = today.getUTCFullYear();
+
+  const items = (Array.isArray(concerts) ? concerts : [])
+    .map((concert) => {
+      const dateStr = asText(concert?.date);
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+      if (!m) return null;
+
+      const year = Number(m[1]);
+      const month = Number(m[2]);
+      const day = Number(m[3]);
+
+      if (year >= utcYear) return null;
+      if (month !== utcMonth || day !== utcDay) return null;
+
+      return {
+        ...concert,
+        years_ago: utcYear - year,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (a.years_ago !== b.years_ago) return a.years_ago - b.years_ago;
+      return String(b.date).localeCompare(String(a.date));
+    });
+
+  const todayIso = `${String(utcYear).padStart(4, "0")}-${String(utcMonth).padStart(2, "0")}-${String(utcDay).padStart(2, "0")}`;
+
+  return {
+    today: todayIso,
+    items,
+  };
+    }
